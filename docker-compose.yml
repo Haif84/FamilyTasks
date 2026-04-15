@@ -1,0 +1,23 @@
+# Production-oriented stack for VPS.
+# Copy .env on the server (never commit secrets). See docs/DEPLOY.md
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: family-tasks-bot:latest
+    container_name: family-tasks-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Ensure DB lives on mounted volume unless overridden in .env
+      DB_PATH: ${DB_PATH:-/app/data/family_tasks.sqlite3}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - bot_data:/app/data
+
+volumes:
+  bot_data:
+    driver: local

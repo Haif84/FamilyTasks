@@ -1,0 +1,57 @@
+name: Deploy to VPS
+
+# CD: SSH to your VPS, pull latest code, rebuild and restart the bot container.
+# Configure repository secrets (Settings → Secrets and variables → Actions):
+#   VPS_HOST              — hostname or IP
+#   VPS_USER              — SSH user (e.g. deploy)
+#   VPS_SSH_PRIVATE_KEY   — full private key (PEM), including BEGIN/END lines
+#   VPS_DEPLOY_PATH       — absolute path to repo clone on server (e.g. /home/deploy/FamilyTasks)
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to deploy (branch or tag)"
+        required: false
+        default: "main"
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Optional: create a GitHub Environment "production" with required reviewers, then uncomment:
+    # environment: production
+
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          GIT_REF: ${{ github.event.inputs.ref || github.ref_name }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          script_stop: true
+          envs: GIT_REF
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.VPS_DEPLOY_PATH }}"
+            git fetch --all --tags
+            if git show-ref --verify --quiet "refs/heads/${GIT_REF}"; then
+              git checkout "${GIT_REF}"
+              git pull --ff-only origin "${GIT_REF}"
+            elif git show-ref --verify --quiet "refs/tags/${GIT_REF}"; then
+              git checkout "${GIT_REF}"
+            else
+              git checkout main
+              git pull --ff-only origin main
+            fi
+            docker compose pull || true
+            docker compose build --pull
+            docker compose up -d --remove-orphans
+            docker compose ps
