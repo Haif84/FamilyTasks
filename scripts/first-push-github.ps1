@@ -75,11 +75,10 @@ if ($status) {
 $login = gh api user --jq .login
 $repoUrl = "https://github.com/$login/$RepoName.git"
 
-$hasOrigin = $false
-git remote get-url origin 2>$null | Out-Null
-if ($LASTEXITCODE -eq 0) {
-    $hasOrigin = $true
-}
+# Do not use "git remote get-url origin" here: with $ErrorActionPreference=Stop,
+# git writes to stderr and PowerShell treats it as a terminating error.
+$remotes = @(git remote 2>$null)
+$hasOrigin = $remotes -contains "origin"
 
 if (-not $hasOrigin) {
     gh repo create $RepoName --$Visibility --source=. --remote=origin --description "Telegram bot: family household tasks (aiogram + SQLite)" 2>$null
@@ -92,7 +91,10 @@ if (-not $hasOrigin) {
     }
 }
 
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 $head = git rev-parse HEAD 2>$null
+$ErrorActionPreference = $prevEap
 if (-not $head) {
     Write-Error "No commit to push. Fix any errors above and run again."
 }
