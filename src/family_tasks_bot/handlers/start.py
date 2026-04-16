@@ -4,6 +4,7 @@ from aiogram import Router
 from aiogram.filters import CommandStart
 from aiogram.types import Message
 
+from family_tasks_bot.deps import get_repositories
 from family_tasks_bot.keyboards.reply import main_menu
 from family_tasks_bot.services.bootstrap import ensure_member_context
 from family_tasks_bot.handlers.common import role_title
@@ -13,9 +14,7 @@ router = Router(name="start")
 
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
 
     if ctx.family_id is None:

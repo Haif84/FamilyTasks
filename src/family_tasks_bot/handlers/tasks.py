@@ -7,6 +7,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from family_tasks_bot.deps import get_repositories
 from family_tasks_bot.db.repositories import NotificationRepository, PlannedTaskRepository, TaskRuntimeRepository
 from family_tasks_bot.handlers.common import deny_if_no_family
 from family_tasks_bot.keyboards.inline import tasks_keyboard
@@ -22,9 +23,7 @@ router = Router(name="tasks")
 
 @router.message(F.text == "Текущие задачи")
 async def current_tasks(message: Message) -> None:
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if await deny_if_no_family(message, ctx):
         return
@@ -46,9 +45,7 @@ async def current_tasks(message: Message) -> None:
 
 @router.message(F.text == "Добавить выполненную")
 async def add_completed(message: Message) -> None:
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if await deny_if_no_family(message, ctx):
         return
@@ -71,9 +68,7 @@ async def add_completed(message: Message) -> None:
 
 @router.message(F.text == "Добавить к выполнению")
 async def add_to_execution(message: Message, state: FSMContext) -> None:
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if await deny_if_no_family(message, ctx):
         return
@@ -96,9 +91,7 @@ async def add_to_execution(message: Message, state: FSMContext) -> None:
 
 @router.message(F.text == "Плановые задачи")
 async def planned_tasks_menu_open(message: Message, state: FSMContext) -> None:
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if await deny_if_no_family(message, ctx):
         return
@@ -111,9 +104,7 @@ async def planned_tasks_menu_open(message: Message, state: FSMContext) -> None:
 
 @router.message(F.text.in_({"Править", "Добавить", "Добавить (по-умолчанию)"}))
 async def planned_tasks_admin_actions(message: Message, state: FSMContext) -> None:
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if await deny_if_no_family(message, ctx):
         return
@@ -140,9 +131,7 @@ async def planned_tasks_admin_actions(message: Message, state: FSMContext) -> No
 
 @router.message(NavStates.in_planned_tasks_menu, F.text == "Список")
 async def list_planned_tasks(message: Message) -> None:
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if await deny_if_no_family(message, ctx):
         return
@@ -163,9 +152,7 @@ async def planned_task_title_entered(message: Message, state: FSMContext) -> Non
     if len(title) < 2:
         await message.answer("Название слишком короткое.")
         return
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     repo = PlannedTaskRepository(db)
     task_id = await repo.create_task(ctx.family_id, title, ctx.user_id)
@@ -179,7 +166,7 @@ async def planned_task_schedule_entered(message: Message, state: FSMContext) -> 
     data = await state.get_data()
     task_id = int(data["task_id"])
     text = (message.text or "").strip()
-    db = message.bot["db_conn"]
+    db, _, _ = get_repositories()
     repo = PlannedTaskRepository(db)
     if text != "-":
         for item in [x.strip() for x in text.split(",") if x.strip()]:
@@ -196,9 +183,7 @@ async def planned_task_schedule_entered(message: Message, state: FSMContext) -> 
 @router.callback_query(F.data.startswith("editpt:"))
 async def edit_task_entry(callback: CallbackQuery) -> None:
     task_id = int(callback.data.split(":")[1])
-    db = callback.message.bot["db_conn"]
-    user_repo = callback.message.bot["user_repo_factory"](db)
-    family_repo = callback.message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if not can_edit_planned_tasks(ctx):
         await callback.answer("Нет прав", show_alert=True)
@@ -238,9 +223,7 @@ async def edit_task_entry(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("adddep:"))
 async def add_dependency_choose_child(callback: CallbackQuery) -> None:
     parent_id = int(callback.data.split(":")[1])
-    db = callback.message.bot["db_conn"]
-    user_repo = callback.message.bot["user_repo_factory"](db)
-    family_repo = callback.message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     repo = PlannedTaskRepository(db)
     tasks = await repo.list_tasks(ctx.family_id)
@@ -283,9 +266,7 @@ async def add_dependency_choose_mode(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("depmode:"))
 async def add_dependency_finalize_or_ask(callback: CallbackQuery, state: FSMContext) -> None:
     _, parent_id, child_id, required, mode = callback.data.split(":")
-    db = callback.message.bot["db_conn"]
-    user_repo = callback.message.bot["user_repo_factory"](db)
-    family_repo = callback.message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     repo = PlannedTaskRepository(db)
     if mode == "none":
@@ -301,9 +282,7 @@ async def add_dependency_finalize_or_ask(callback: CallbackQuery, state: FSMCont
 @router.callback_query(F.data.startswith("depdel:"))
 async def delete_dependency_callback(callback: CallbackQuery) -> None:
     _, parent_id, child_id = callback.data.split(":")
-    db = callback.message.bot["db_conn"]
-    user_repo = callback.message.bot["user_repo_factory"](db)
-    family_repo = callback.message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if not can_edit_planned_tasks(ctx):
         await callback.answer("Нет прав", show_alert=True)
@@ -316,9 +295,7 @@ async def delete_dependency_callback(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("depedit:"))
 async def edit_dependency_callback(callback: CallbackQuery, state: FSMContext) -> None:
     _, parent_id, child_id = callback.data.split(":")
-    db = callback.message.bot["db_conn"]
-    user_repo = callback.message.bot["user_repo_factory"](db)
-    family_repo = callback.message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if not can_edit_planned_tasks(ctx):
         await callback.answer("Нет прав", show_alert=True)
@@ -349,9 +326,7 @@ async def add_dependency_wait_delay(message: Message, state: FSMContext) -> None
         return
     delay = int(text)
     data = await state.get_data()
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     repo = PlannedTaskRepository(db)
     ok = await repo.add_dependency(
@@ -368,9 +343,7 @@ async def add_dependency_wait_delay(message: Message, state: FSMContext) -> None
 
 @router.callback_query(F.data.startswith("adddefault:"))
 async def add_default_task(callback: CallbackQuery) -> None:
-    db = callback.message.bot["db_conn"]
-    user_repo = callback.message.bot["user_repo_factory"](db)
-    family_repo = callback.message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     repo = PlannedTaskRepository(db)
     default_id = int(callback.data.split(":")[1])
@@ -395,9 +368,7 @@ async def execution_time_entered(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip().lower()
     data = await state.get_data()
     task_id = int(data["exec_task_id"])
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     runtime = TaskRuntimeRepository(db)
     notify_repo = NotificationRepository(db)
@@ -428,9 +399,7 @@ async def execution_time_entered(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("done:"))
 async def complete_current_task(callback: CallbackQuery) -> None:
     instance_id = int(callback.data.split(":")[1])
-    db = callback.message.bot["db_conn"]
-    user_repo = callback.message.bot["user_repo_factory"](db)
-    family_repo = callback.message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     runtime = TaskRuntimeRepository(db)
     notify_repo = NotificationRepository(db)
@@ -453,9 +422,7 @@ async def complete_current_task(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("manualdone:"))
 async def complete_manual_task(callback: CallbackQuery) -> None:
     planned_task_id = int(callback.data.split(":")[1])
-    db = callback.message.bot["db_conn"]
-    user_repo = callback.message.bot["user_repo_factory"](db)
-    family_repo = callback.message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     runtime = TaskRuntimeRepository(db)
     notify_repo = NotificationRepository(db)
@@ -474,9 +441,7 @@ async def complete_manual_task(callback: CallbackQuery) -> None:
 
 @router.message(F.text == "Отменить последнее выполнение")
 async def undo_last_completion(message: Message) -> None:
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if await deny_if_no_family(message, ctx):
         return
@@ -580,9 +545,7 @@ async def optional_dependency_callback(callback: CallbackQuery) -> None:
         return
     child_task_id = int(child_token)
     delay = int(delay_token)
-    db = callback.message.bot["db_conn"]
-    user_repo = callback.message.bot["user_repo_factory"](db)
-    family_repo = callback.message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     runtime = TaskRuntimeRepository(db)
     notify_repo = NotificationRepository(db)
@@ -601,9 +564,7 @@ async def configurable_dependency_callback(callback: CallbackQuery, state: FSMCo
     if action == "skip":
         await callback.answer("Пропущено")
         return
-    db = callback.message.bot["db_conn"]
-    user_repo = callback.message.bot["user_repo_factory"](db)
-    family_repo = callback.message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     runtime = TaskRuntimeRepository(db)
     notify_repo = NotificationRepository(db)
@@ -635,9 +596,7 @@ async def configurable_dependency_custom_delay(message: Message, state: FSMConte
         return
     delay = int(text)
     data = await state.get_data()
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     runtime = TaskRuntimeRepository(db)
     notify_repo = NotificationRepository(db)

@@ -6,6 +6,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
+from family_tasks_bot.deps import get_repositories
 from family_tasks_bot.db.repositories import NotificationRepository, TaskRuntimeRepository
 from family_tasks_bot.keyboards.reply import main_menu, misc_menu
 from family_tasks_bot.services.bootstrap import ensure_member_context
@@ -35,9 +36,7 @@ async def statistics_command(message: Message) -> None:
 
 
 async def _send_stats(message: Message, period: str) -> None:
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if ctx.family_id is None:
         await message.answer("Вы пока не добавлены в семью.")
@@ -65,9 +64,7 @@ async def _send_stats(message: Message, period: str) -> None:
 
 @router.message(F.text == "Назад")
 async def back_to_main(message: Message, state: FSMContext) -> None:
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     await state.clear()
     await message.answer("Главное меню", reply_markup=main_menu(is_parent=ctx.is_parent))
@@ -80,9 +77,7 @@ async def set_quiet_mode(message: Message) -> None:
         await message.answer("Формат: /quiet HH:MM-HH:MM [all|0..6]")
         return
     quiet_from, quiet_to, day_token = match.groups()
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if ctx.family_id is None:
         await message.answer("Вы не состоите в семье.")

@@ -9,8 +9,10 @@ from aiogram import Bot, Dispatcher
 from aiogram.methods import SendMessage
 from aiogram.types import Chat, Message, Update, User
 
+from family_tasks_bot.deps import install_deps, reset_deps
 from family_tasks_bot.db.repositories import FamilyRepository, UserRepository
 from family_tasks_bot.handlers import setup_routers
+from family_tasks_bot.utils.validators import invite_row_username_for_tg_id
 
 DP = Dispatcher()
 DP.include_router(setup_routers())
@@ -59,11 +61,11 @@ class StubBot(Bot):
 async def test_start_creates_initial_family_and_replies() -> None:
     conn = await _bootstrap_db()
     bot = StubBot()
-    bot["db_conn"] = conn
-    bot["user_repo_factory"] = UserRepository
-    bot["family_repo_factory"] = FamilyRepository
-
-    await DP.feed_update(bot, _make_message_update(1, 101, "/start", "first_admin"))
+    token = install_deps(conn, UserRepository, FamilyRepository)
+    try:
+        await DP.feed_update(bot, _make_message_update(1, 101, "/start", "first_admin"))
+    finally:
+        reset_deps(token)
     assert any("Вы добавлены в семью" in msg for msg in bot.sent_texts)
 
     async with conn.execute("SELECT COUNT(*) AS cnt FROM families") as cursor:
@@ -88,11 +90,45 @@ async def test_child_cannot_add_to_execution() -> None:
     await conn.commit()
 
     bot = StubBot()
-    bot["db_conn"] = conn
-    bot["user_repo_factory"] = UserRepository
-    bot["family_repo_factory"] = FamilyRepository
-
-    await DP.feed_update(bot, _make_message_update(2, 1002, "Добавить к выполнению", "kid"))
+    token = install_deps(conn, UserRepository, FamilyRepository)
+    try:
+        await DP.feed_update(bot, _make_message_update(2, 1002, "Добавить к выполнению", "kid"))
+    finally:
+        reset_deps(token)
     assert any("только родителям" in msg for msg in bot.sent_texts)
+    await conn.close()
+    await bot.session.close()
+
+
+@pytest.mark.asyncio
+async def test_invite_by_telegram_id_accepted_on_start() -> None:
+    conn = await _bootstrap_db()
+    await conn.execute(
+        "INSERT INTO users (id, tg_user_id, username, display_name) VALUES (1, 1000, 'admin', 'Admin')"
+    )
+    await conn.execute("INSERT INTO families (id, name, created_by_user_id) VALUES (1, 'F', 1)")
+    await conn.execute(
+        "INSERT INTO family_members (family_id, user_id, role_type, is_admin, is_active) "
+        "VALUES (1, 1, 'parent', 1, 1)"
+    )
+    await conn.commit()
+
+    fam = FamilyRepository(conn)
+    await fam.add_invite(1, invite_row_username_for_tg_id(8888), "child", False, 1)
+
+    bot = StubBot()
+    token = install_deps(conn, UserRepository, FamilyRepository)
+    try:
+        await DP.feed_update(bot, _make_message_update(3, 8888, "/start", None))
+    finally:
+        reset_deps(token)
+
+    assert any("Вы добавлены в семью" in msg for msg in bot.sent_texts)
+    async with conn.execute(
+        "SELECT COUNT(*) AS cnt FROM family_members WHERE family_id = 1 AND is_active = 1"
+    ) as cursor:
+        row = await cursor.fetchone()
+    assert int(row["cnt"]) == 2
+
     await conn.close()
     await bot.session.close()

@@ -4,22 +4,21 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
+from family_tasks_bot.deps import get_repositories
 from family_tasks_bot.handlers.common import deny_if_no_family
 from family_tasks_bot.keyboards.inline import member_actions_keyboard, members_edit_keyboard
 from family_tasks_bot.keyboards.reply import family_menu
 from family_tasks_bot.states import FamilyStates, NavStates
 from family_tasks_bot.services.auth import can_edit_family
 from family_tasks_bot.services.bootstrap import ensure_member_context
-from family_tasks_bot.utils.validators import is_valid_username
+from family_tasks_bot.utils.validators import invite_row_username_for_tg_id, parse_invite_input
 
 router = Router(name="family")
 
 
 @router.message(F.text == "Состав семьи")
 async def open_family_menu(message: Message, state: FSMContext) -> None:
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if await deny_if_no_family(message, ctx):
         return
@@ -29,9 +28,7 @@ async def open_family_menu(message: Message, state: FSMContext) -> None:
 
 @router.message(NavStates.in_family_menu, F.text == "Список")
 async def show_family_list(message: Message) -> None:
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if await deny_if_no_family(message, ctx):
         return
@@ -47,9 +44,7 @@ async def show_family_list(message: Message) -> None:
 
 @router.message(F.text == "Править")
 async def family_edit_open(message: Message) -> None:
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if await deny_if_no_family(message, ctx):
         return
@@ -66,9 +61,7 @@ async def family_edit_open(message: Message) -> None:
 
 @router.callback_query(F.data.startswith("member:"))
 async def family_member_callback(callback: CallbackQuery) -> None:
-    db = callback.message.bot["db_conn"]
-    user_repo = callback.message.bot["user_repo_factory"](db)
-    family_repo = callback.message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if ctx.family_id is None or not can_edit_family(ctx):
         await callback.answer("Нет прав", show_alert=True)
@@ -93,9 +86,7 @@ async def family_member_callback(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("memberact:"))
 async def family_member_action_callback(callback: CallbackQuery) -> None:
-    db = callback.message.bot["db_conn"]
-    user_repo = callback.message.bot["user_repo_factory"](db)
-    family_repo = callback.message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if ctx.family_id is None or not can_edit_family(ctx):
         await callback.answer("Нет прав", show_alert=True)
@@ -119,28 +110,30 @@ async def family_member_action_callback(callback: CallbackQuery) -> None:
 
 @router.message(F.text == "Добавить родителя")
 async def add_parent_start(message: Message, state: FSMContext) -> None:
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if ctx.family_id is None or not can_edit_family(ctx):
         await message.answer("Эта команда доступна только администраторам.")
         return
     await state.set_state(FamilyStates.waiting_parent_username)
-    await message.answer("Введите @username родителя:")
+    await message.answer(
+        "Введите @username родителя или только числовой Telegram ID пользователя "
+        "(узнать можно через @userinfobot и др.; без @, только цифры)."
+    )
 
 
 @router.message(F.text == "Добавить ребенка")
 async def add_child_start(message: Message, state: FSMContext) -> None:
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if ctx.family_id is None or not can_edit_family(ctx):
         await message.answer("Эта команда доступна только администраторам.")
         return
     await state.set_state(FamilyStates.waiting_child_username)
-    await message.answer("Введите @username ребенка:")
+    await message.answer(
+        "Введите @username ребенка или только числовой Telegram ID пользователя "
+        "(без @, только цифры)."
+    )
 
 
 @router.message(FamilyStates.waiting_parent_username)
@@ -154,22 +147,43 @@ async def add_child_finish(message: Message, state: FSMContext) -> None:
 
 
 async def _save_invite(message: Message, state: FSMContext, role_type: str) -> None:
-    username = (message.text or "").strip().lower()
-    if not is_valid_username(username):
-        await message.answer("Некорректный @username. Пример: @family_member")
+    parsed = parse_invite_input(message.text or "")
+    if parsed is None:
+        await message.answer(
+            "Некорректный ввод. Укажите @username (например, @family_member) "
+            "или только числовой Telegram ID (например, 123456789), без пробелов."
+        )
         return
-    db = message.bot["db_conn"]
-    user_repo = message.bot["user_repo_factory"](db)
-    family_repo = message.bot["family_repo_factory"](db)
+    db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if await deny_if_no_family(message, ctx):
         await state.clear()
         return
-    await family_repo.add_invite(ctx.family_id, username, role_type, False, ctx.user_id)
+
+    kind, value = parsed
+    if kind == "tg_id":
+        tg_target = int(value)
+        if tg_target == message.from_user.id:
+            await message.answer("Нельзя пригласить самого себя по ID.")
+            return
+        if await family_repo.family_has_member_tg_id(ctx.family_id, tg_target):
+            await message.answer("Этот пользователь уже состоит в вашей семье.")
+            return
+        storage_key = invite_row_username_for_tg_id(tg_target)
+        label = f"Telegram ID {tg_target}"
+    else:
+        uname = str(value)
+        if message.from_user.username and uname == f"@{message.from_user.username.lower()}":
+            await message.answer("Нельзя пригласить самого себя.")
+            return
+        storage_key = uname
+        label = uname
+
+    await family_repo.add_invite(ctx.family_id, storage_key, role_type, False, ctx.user_id)
     await state.clear()
     role_title = "родитель" if role_type == "parent" else "ребенок"
     await message.answer(
-        f"Приглашение для {username} создано.\n"
+        f"Приглашение для {label} создано.\n"
         f"После /start пользователь будет добавлен как {role_title}.",
         reply_markup=family_menu(is_admin=ctx.is_admin),
     )

@@ -1,0 +1,2 @@
+# Shell in Docker must be LF-only (CRLF breaks shebang / set -e lines).
+*.sh text eol=lf

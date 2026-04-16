@@ -52,6 +52,7 @@ jobs:
               git pull --ff-only origin main
             fi
             docker compose pull || true
+            export CACHEBUST="$(date +%s)"
             docker compose build --pull
             docker compose up -d --remove-orphans
             docker compose ps

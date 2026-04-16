@@ -153,6 +153,19 @@ class FamilyRepository:
         )
         await self.conn.commit()
 
+    async def family_has_member_tg_id(self, family_id: int, tg_user_id: int) -> bool:
+        async with self.conn.execute(
+            """
+            SELECT 1
+            FROM family_members fm
+            JOIN users u ON u.id = fm.user_id
+            WHERE fm.family_id = ? AND fm.is_active = 1 AND u.tg_user_id = ?
+            LIMIT 1
+            """,
+            (family_id, tg_user_id),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
     async def list_members_for_edit(self, family_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """

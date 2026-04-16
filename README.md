@@ -14,7 +14,7 @@ Telegram bot on `aiogram 3.x` + `SQLite` for family household task tracking.
 ## MVP commands and flows
 
 - `/start` - onboarding and role-aware menu.
-- `Состав семьи` -> `Добавить родителя/ребенка` - invite by `@username`.
+- `Состав семьи` -> `Добавить родителя/ребенка` - invite by `@username` or numeric Telegram user id (digits only, no `@`).
 - `Плановые задачи` -> `Добавить` - create task and weekly schedule (`06:30,20:00`).
 - `Плановые задачи` -> `Править` - open task editor and add dependencies via inline constructor.
 - В редакторе задачи доступны изменение и удаление зависимостей.

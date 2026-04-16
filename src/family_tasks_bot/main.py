@@ -10,6 +10,7 @@ from aiogram.enums.parse_mode import ParseMode
 from family_tasks_bot.config import settings
 from family_tasks_bot.db.database import Database
 from family_tasks_bot.db.migrations import run_migrations, seed_default_tasks
+from family_tasks_bot.deps import install_deps, reset_deps
 from family_tasks_bot.db.repositories import FamilyRepository, UserRepository
 from family_tasks_bot.handlers import setup_routers
 from family_tasks_bot.scheduler import scheduler_loop
@@ -29,16 +30,14 @@ async def main() -> None:
     )
     dp = Dispatcher()
 
-    bot["db_conn"] = conn
-    bot["user_repo_factory"] = UserRepository
-    bot["family_repo_factory"] = FamilyRepository
-
     dp.include_router(setup_routers())
     asyncio.create_task(scheduler_loop(bot, conn))
 
+    token = install_deps(conn, UserRepository, FamilyRepository)
     try:
         await dp.start_polling(bot)
     finally:
+        reset_deps(token)
         await conn.close()
         await bot.session.close()
 

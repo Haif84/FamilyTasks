@@ -6,15 +6,19 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Меняется при каждом вызове deploy-vps.ps1, чтобы Docker не использовал старый кэш без нового кода.
+        CACHEBUST: ${CACHEBUST:-0}
     image: family-tasks-bot:latest
     container_name: family-tasks-bot
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      # Ensure DB lives on mounted volume unless overridden in .env
-      DB_PATH: ${DB_PATH:-/app/data/family_tasks.sqlite3}
+      # DB_PATH без ${DB_PATH:-…}: иначе из .env (часто путь с Windows) подставится в compose и сломает SQLite.
+      DB_PATH: /app/data/family_tasks.sqlite3
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED:-1}
     volumes:
       - bot_data:/app/data
 

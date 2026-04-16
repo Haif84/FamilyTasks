@@ -4,6 +4,7 @@ from aiogram.types import User as TgUser
 
 from family_tasks_bot.db.repositories import FamilyRepository, UserRepository
 from family_tasks_bot.services.auth import AccessContext
+from family_tasks_bot.utils.validators import invite_row_username_for_tg_id
 
 
 async def ensure_member_context(
@@ -15,7 +16,10 @@ async def ensure_member_context(
     display_name = tg_user.full_name or tg_user.username or str(tg_user.id)
     user_id = await user_repo.upsert_user(tg_user.id, tg_user.username, display_name)
 
-    if tg_user.username:
+    invite = await user_repo.find_pending_invite(invite_row_username_for_tg_id(tg_user.id))
+    if invite is not None:
+        await user_repo.accept_invite(int(invite["id"]), user_id)
+    elif tg_user.username:
         invite = await user_repo.find_pending_invite(f"@{tg_user.username.lower()}")
         if invite is not None:
             await user_repo.accept_invite(int(invite["id"]), user_id)

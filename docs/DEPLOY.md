@@ -101,6 +101,25 @@ ssh -i ./gha_deploy_key <VPS_USER>@<VPS_HOST> "echo ok"
 
 Убедитесь, что пользователь из `VPS_USER` может выполнять `docker compose` в каталоге деплоя (группа `docker` и права на каталог).
 
+## 5.1 Деплой с локального ПК (`.env` уже в папке проекта)
+
+Скрипт [`scripts/deploy-vps.ps1`](../scripts/deploy-vps.ps1) копирует **локальный** `.env` на сервер и выполняет `git pull` + `docker compose`.
+
+Первый раз на VPS создайте каталог и клонируйте репозиторий (подставьте свой URL и путь):
+
+```bash
+ssh root@YOUR_VPS_IP "mkdir -p /opt/family-tasks && git clone https://github.com/YOUR_USER/FamilyTasks.git /opt/family-tasks/FamilyTasks"
+```
+
+Дальше с **Windows** из корня проекта (где лежит `.env`):
+
+```powershell
+cd E:\ZeroCoder\FamilyTasks
+.\scripts\deploy-vps.ps1 -VpsHost YOUR_VPS_IP -User root -RemotePath /opt/family-tasks/FamilyTasks
+```
+
+Потребуется ввод пароля или настроенный SSH‑ключ. Токен бота только в `.env`, в репозиторий не коммитьте.
+
 ## 6. Обновление бота после релиза
 
 Локально:
