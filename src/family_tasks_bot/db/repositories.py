@@ -266,6 +266,18 @@ class PlannedTaskRepository:
         await self.conn.commit()
         return int(cur.lastrowid)
 
+    async def update_task_title(self, family_id: int, task_id: int, title: str) -> bool:
+        cur = await self.conn.execute(
+            """
+            UPDATE planned_tasks
+            SET title = ?
+            WHERE family_id = ? AND id = ? AND is_active = 1
+            """,
+            (title, family_id, task_id),
+        )
+        await self.conn.commit()
+        return (cur.rowcount or 0) > 0
+
     async def add_schedule(self, task_id: int, hhmm: str, day_of_week: int) -> None:
         await self.conn.execute(
             "INSERT INTO task_schedules (task_id, day_of_week, time_hhmm, is_active) VALUES (?, ?, ?, 1)",

@@ -97,7 +97,7 @@ if ($LASTEXITCODE -ne 0) {
 
 # --- 3) Pull + compose ---
 # CACHEBUST: каждый деплой уникален — иначе docker build может остаться полностью CACHED со старым образом.
-# APP_VERSION: автонумерация YYYY.MM.DD.N на основе git-тегов вида vYYYY.MM.DD.N.
+# APP_VERSION: берём из src/family_tasks_bot/version.py.
 $remoteCmd = @"
 set -euo pipefail
 cd "$RemotePath"
@@ -107,27 +107,11 @@ git pull --ff-only
 echo '--- git HEAD ---'
 git rev-parse HEAD
 git log -1 --oneline
-today=`$(date +%Y.%m.%d)
-tag_n=`$(git tag -l "v`$today.*" | sed -E "s/^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.([0-9]+)$/\1/" | sort -n | tail -1)
-if [ -z "`$tag_n" ]; then
-  tag_n=0
+APP_VERSION=`$(sed -n 's/^APP_VERSION = "\(.*\)"/\1/p' src/family_tasks_bot/version.py | head -1)
+if [ -z "`$APP_VERSION" ]; then
+  echo "Failed to parse APP_VERSION from src/family_tasks_bot/version.py"
+  exit 1
 fi
-current_n=0
-current_version=`$(
-  docker compose ps -q bot 2>/dev/null \
-    | xargs -r docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
-    | sed -n 's/^APP_VERSION=//p' \
-    | head -1
-)
-if [[ "`$current_version" =~ ^`${today//./\\.}\.([0-9]+)`$ ]]; then
-  current_n="`$`{BASH_REMATCH[1]}"
-fi
-if [ "`$current_n" -gt "`$tag_n" ]; then
-  base_n="`$current_n"
-else
-  base_n="`$tag_n"
-fi
-APP_VERSION="`$today.`$((base_n + 1))"
 echo "--- app version ---"
 echo "`$APP_VERSION"
 CACHEBUST=`$(date +%s) APP_VERSION="`$APP_VERSION" docker compose build --pull

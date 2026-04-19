@@ -8,6 +8,7 @@ class FamilyStates(StatesGroup):
 
 class PlannedTaskStates(StatesGroup):
     waiting_title = State()
+    waiting_edit_title = State()
     waiting_schedule = State()
     waiting_default_schedule = State()
     waiting_dependency_delay = State()

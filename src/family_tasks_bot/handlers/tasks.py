@@ -206,8 +206,12 @@ async def edit_task_entry(callback: CallbackQuery) -> None:
         await callback.answer("Нет прав", show_alert=True)
         return
     repo = PlannedTaskRepository(db)
+    task = await repo.get_task(ctx.family_id, task_id)
+    if task is None:
+        await callback.answer("Задача не найдена", show_alert=True)
+        return
     deps = await repo.list_dependencies(ctx.family_id, task_id)
-    lines = [f"Задача #{task_id}", "Зависимости:"]
+    lines = [f"Задача #{task_id}: {task['title']}", "Зависимости:"]
     if deps:
         for dep in deps:
             req = "обязательная" if dep["is_required"] else "опциональная"
@@ -217,6 +221,7 @@ async def edit_task_entry(callback: CallbackQuery) -> None:
     else:
         lines.append("- нет")
     dep_buttons: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="Изменить имя", callback_data=f"editpttitle:{task_id}")],
         [InlineKeyboardButton(text="Добавить зависимость", callback_data=f"adddep:{task_id}")]
     ]
     for dep in deps:
@@ -235,6 +240,52 @@ async def edit_task_entry(callback: CallbackQuery) -> None:
     kb = InlineKeyboardMarkup(inline_keyboard=dep_buttons)
     await callback.message.answer("\n".join(lines), reply_markup=kb)
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("editpttitle:"))
+async def edit_task_title_start(callback: CallbackQuery, state: FSMContext) -> None:
+    task_id = int(callback.data.split(":")[1])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if not can_edit_planned_tasks(ctx):
+        await callback.answer("Нет прав", show_alert=True)
+        return
+    repo = PlannedTaskRepository(db)
+    task = await repo.get_task(ctx.family_id, task_id)
+    if task is None:
+        await callback.answer("Задача не найдена", show_alert=True)
+        return
+    await state.set_state(PlannedTaskStates.waiting_edit_title)
+    await state.update_data(edit_task_id=task_id)
+    await callback.message.answer(f"Текущее имя: {task['title']}\nВведите новое название задачи:")
+    await callback.answer()
+
+
+@router.message(PlannedTaskStates.waiting_edit_title)
+async def planned_task_edit_title_entered(message: Message, state: FSMContext) -> None:
+    title = (message.text or "").strip()
+    if len(title) < 2:
+        await message.answer("Название слишком короткое.")
+        return
+    data = await state.get_data()
+    task_id = int(data.get("edit_task_id", 0))
+    if task_id <= 0:
+        await state.clear()
+        await message.answer("Не удалось определить задачу для переименования.")
+        return
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+    if not can_edit_planned_tasks(ctx):
+        await state.clear()
+        await message.answer("Эта команда доступна только администраторам.")
+        return
+    repo = PlannedTaskRepository(db)
+    updated = await repo.update_task_title(ctx.family_id, task_id, title)
+    await state.clear()
+    if not updated:
+        await message.answer("Задача не найдена или недоступна для редактирования.")
+        return
+    await message.answer("Название задачи обновлено.")
 
 
 @router.callback_query(F.data.startswith("adddep:"))
