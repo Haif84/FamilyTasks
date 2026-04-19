@@ -29,7 +29,7 @@ async def send_planned_tasks_overview(message: Message, ctx: AccessContext) -> N
         await message.answer("Список плановых задач пуст.")
         return
     if can_edit_planned_tasks(ctx):
-        buttons = [{"id": str(task["id"]), "title": str(task["title"])} for task in tasks]
+        buttons = [{"id": str(task["id"]), "title": f"{task['sort_order']}. {task['title']}"} for task in tasks]
         await message.answer(
             "Плановые задачи — выберите задачу для редактирования:",
             reply_markup=tasks_keyboard(buttons, "editpt"),
@@ -37,7 +37,7 @@ async def send_planned_tasks_overview(message: Message, ctx: AccessContext) -> N
         return
     lines = ["Список плановых задач:"]
     for task in tasks:
-        lines.append(f"- #{task['id']} {task['title']}")
+        lines.append(f"- {task['sort_order']}. #{task['id']} {task['title']}")
     await message.answer("\n".join(lines))
 
 
@@ -203,7 +203,7 @@ async def _send_task_editor(message: Message, repo: PlannedTaskRepository, famil
         await message.answer("Задача не найдена.")
         return False
     deps = await repo.list_dependencies(family_id, task_id)
-    lines = [f"Задача #{task_id}: {task['title']}", "Зависимости:"]
+    lines = [f"Задача #{task_id}: {task['title']}", f"Позиция в списке: {task['sort_order']}", "Зависимости:"]
     if deps:
         for dep in deps:
             req = "обязательная" if dep["is_required"] else "опциональная"
@@ -269,8 +269,12 @@ async def edit_task_move(callback: CallbackQuery) -> None:
     if not moved:
         await callback.answer("Перемещение недоступно", show_alert=True)
         return
+    task = await repo.get_task(ctx.family_id, task_id)
     await _send_task_editor(callback.message, repo, ctx.family_id, task_id)
-    await callback.answer("Порядок обновлён")
+    if task is None:
+        await callback.answer("Порядок обновлён")
+        return
+    await callback.answer(f"Порядок обновлён. Текущая позиция: {task['sort_order']}")
 
 
 @router.callback_query(F.data.startswith("editpttitle:"))

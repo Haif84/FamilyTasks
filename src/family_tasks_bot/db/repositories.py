@@ -255,7 +255,7 @@ class PlannedTaskRepository:
 
     async def get_task(self, family_id: int, task_id: int) -> aiosqlite.Row | None:
         async with self.conn.execute(
-            "SELECT id, title FROM planned_tasks WHERE family_id = ? AND id = ? AND is_active = 1",
+            "SELECT id, title, sort_order FROM planned_tasks WHERE family_id = ? AND id = ? AND is_active = 1",
             (family_id, task_id),
         ) as cursor:
             return await cursor.fetchone()
