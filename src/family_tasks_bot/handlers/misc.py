@@ -75,7 +75,7 @@ async def back_to_main(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         "Главное меню",
-        reply_markup=main_menu(is_parent=ctx.is_parent, is_admin=ctx.is_admin),
+        reply_markup=main_menu(is_admin=ctx.is_admin),
     )
 
 

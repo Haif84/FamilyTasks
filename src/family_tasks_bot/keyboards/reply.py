@@ -9,12 +9,12 @@ def _rows_of_two(labels: list[str]) -> list[list[KeyboardButton]]:
     return rows
 
 
-def main_menu(is_parent: bool, is_admin: bool) -> ReplyKeyboardMarkup:
+def main_menu(is_admin: bool) -> ReplyKeyboardMarkup:
     labels: list[str] = []
     if is_admin:
         labels.append("Текущие задачи")
     labels.extend(["Добавить выполненную", "Отменить последнее выполнение"])
-    if is_parent:
+    if is_admin:
         labels.append("Добавить к выполнению")
     labels.append("Прочее")
     rows = _rows_of_two(labels)

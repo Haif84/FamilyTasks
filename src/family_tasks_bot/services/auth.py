@@ -30,4 +30,4 @@ def can_edit_planned_tasks(ctx: AccessContext) -> bool:
 
 
 def can_add_to_execution(ctx: AccessContext) -> bool:
-    return ctx.is_parent
+    return ctx.is_admin

@@ -96,7 +96,7 @@ async def add_to_execution(message: Message, state: FSMContext) -> None:
     if await deny_if_no_family(message, ctx):
         return
     if not can_add_to_execution(ctx):
-        await message.answer("Добавление задач к выполнению доступно только родителям.")
+        await message.answer("Добавление задач к выполнению доступно только администраторам.")
         return
     runtime = TaskRuntimeRepository(db)
     tasks = await runtime.list_planned_tasks(ctx.family_id)

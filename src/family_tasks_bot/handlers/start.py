@@ -28,5 +28,5 @@ async def cmd_start(message: Message) -> None:
         f"Вы добавлены в семью \"{ctx.family_name}\".\n"
         f"Ваша роль: {role_title(ctx)}.\n"
         "Выберите действие в меню ниже.",
-        reply_markup=main_menu(is_parent=ctx.is_parent, is_admin=ctx.is_admin),
+        reply_markup=main_menu(is_admin=ctx.is_admin),
     )
