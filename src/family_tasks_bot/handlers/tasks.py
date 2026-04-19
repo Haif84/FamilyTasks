@@ -30,7 +30,10 @@ async def send_planned_tasks_overview(message: Message, ctx: AccessContext) -> N
         await message.answer("Список плановых задач пуст.")
         return
     if can_edit_planned_tasks(ctx):
-        buttons = [{"id": str(task["id"]), "title": f"{task['sort_order']}. {task['title']}"} for task in tasks]
+        buttons = []
+        for task in tasks:
+            suffix = " (неактивна)" if not bool(task["is_active"]) else ""
+            buttons.append({"id": str(task["id"]), "title": f"{task['sort_order']}. {task['title']}{suffix}"})
         await message.answer(
             "Плановые задачи — выберите задачу для редактирования:",
             reply_markup=tasks_keyboard(buttons, "editpt"),
@@ -38,7 +41,8 @@ async def send_planned_tasks_overview(message: Message, ctx: AccessContext) -> N
         return
     lines = ["Список плановых задач:"]
     for task in tasks:
-        lines.append(f"- {task['sort_order']}. #{task['id']} {task['title']}")
+        suffix = " (неактивна)" if not bool(task["is_active"]) else ""
+        lines.append(f"- {task['sort_order']}. #{task['id']} {task['title']}{suffix}")
     await message.answer("\n".join(lines))
 
 
@@ -205,7 +209,9 @@ async def _build_task_editor_payload(
     if task is None:
         return None
     deps = await repo.list_dependencies(family_id, task_id)
-    lines = [f"Задача #{task_id}: {task['title']}", f"Позиция в списке: {task['sort_order']}", "Зависимости:"]
+    is_active = bool(task["is_active"])
+    state_text = "Активна" if is_active else "Неактивна"
+    lines = [f"Задача #{task_id}: {task['title']}", f"Позиция в списке: {task['sort_order']}", f"Статус: {state_text}", "Зависимости:"]
     if deps:
         for dep in deps:
             req = "обязательная" if dep["is_required"] else "опциональная"
@@ -217,6 +223,12 @@ async def _build_task_editor_payload(
 
     dep_buttons: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text="Изменить имя", callback_data=f"editpttitle:{task_id}")],
+        [
+            InlineKeyboardButton(
+                text="Деактивировать" if is_active else "Активировать",
+                callback_data=f"editptactive:{task_id}:{0 if is_active else 1}",
+            )
+        ],
         [
             InlineKeyboardButton(text="Вверх", callback_data=f"editptmove:{task_id}:up"),
             InlineKeyboardButton(text="Вниз", callback_data=f"editptmove:{task_id}:down"),
@@ -309,6 +321,28 @@ async def edit_task_move(callback: CallbackQuery) -> None:
         await callback.answer("Порядок обновлён")
         return
     await callback.answer(f"Порядок обновлён. Текущая позиция: {sort_order}")
+
+
+@router.callback_query(F.data.startswith("editptactive:"))
+async def edit_task_active_toggle(callback: CallbackQuery) -> None:
+    _, task_id_raw, active_raw = callback.data.split(":")
+    task_id = int(task_id_raw)
+    target_active = active_raw == "1"
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if not can_edit_planned_tasks(ctx):
+        await callback.answer("Нет прав", show_alert=True)
+        return
+    repo = PlannedTaskRepository(db)
+    updated = await repo.set_task_active(ctx.family_id, task_id, target_active)
+    if not updated:
+        await callback.answer("Задача не найдена", show_alert=True)
+        return
+    refreshed, _ = await _refresh_task_editor_message(callback.message, repo, ctx.family_id, task_id)
+    if not refreshed:
+        await callback.answer("Задача не найдена", show_alert=True)
+        return
+    await callback.answer("Задача активирована" if target_active else "Задача деактивирована")
 
 
 @router.callback_query(F.data.startswith("editpttitle:"))

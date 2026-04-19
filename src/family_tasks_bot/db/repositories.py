@@ -255,7 +255,7 @@ class PlannedTaskRepository:
 
     async def get_task(self, family_id: int, task_id: int) -> aiosqlite.Row | None:
         async with self.conn.execute(
-            "SELECT id, title, sort_order FROM planned_tasks WHERE family_id = ? AND id = ? AND is_active = 1",
+            "SELECT id, title, sort_order, is_active FROM planned_tasks WHERE family_id = ? AND id = ?",
             (family_id, task_id),
         ) as cursor:
             return await cursor.fetchone()
@@ -281,6 +281,18 @@ class PlannedTaskRepository:
             WHERE family_id = ? AND id = ? AND is_active = 1
             """,
             (title, family_id, task_id),
+        )
+        await self.conn.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def set_task_active(self, family_id: int, task_id: int, is_active: bool) -> bool:
+        cur = await self.conn.execute(
+            """
+            UPDATE planned_tasks
+            SET is_active = ?
+            WHERE family_id = ? AND id = ?
+            """,
+            (int(is_active), family_id, task_id),
         )
         await self.conn.commit()
         return (cur.rowcount or 0) > 0
