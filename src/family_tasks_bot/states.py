@@ -4,6 +4,7 @@ from aiogram.fsm.state import State, StatesGroup
 class FamilyStates(StatesGroup):
     waiting_parent_username = State()
     waiting_child_username = State()
+    waiting_member_display_name = State()
 
 
 class PlannedTaskStates(StatesGroup):

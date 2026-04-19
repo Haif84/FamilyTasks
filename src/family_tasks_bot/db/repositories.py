@@ -182,7 +182,7 @@ class FamilyRepository:
     async def get_member(self, member_id: int, family_id: int) -> aiosqlite.Row | None:
         async with self.conn.execute(
             """
-            SELECT fm.*, u.display_name, u.username
+            SELECT fm.*, u.display_name, u.username, u.tg_user_id
             FROM family_members fm
             JOIN users u ON u.id = fm.user_id
             WHERE fm.id = ? AND fm.family_id = ? AND fm.is_active = 1
@@ -190,6 +190,21 @@ class FamilyRepository:
             (member_id, family_id),
         ) as cursor:
             return await cursor.fetchone()
+
+    async def update_member_display_name(self, member_id: int, family_id: int, display_name: str) -> bool:
+        async with self.conn.execute(
+            "SELECT user_id FROM family_members WHERE id = ? AND family_id = ? AND is_active = 1",
+            (member_id, family_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return False
+        await self.conn.execute(
+            "UPDATE users SET display_name = ? WHERE id = ?",
+            (display_name, int(row["user_id"])),
+        )
+        await self.conn.commit()
+        return True
 
     async def admin_count(self, family_id: int) -> int:
         async with self.conn.execute(

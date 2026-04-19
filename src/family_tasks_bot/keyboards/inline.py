@@ -20,6 +20,7 @@ def member_actions_keyboard(member_id: int, is_parent: bool, is_admin: bool) -> 
     )
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="Отображаемое имя", callback_data=f"memberact:{member_id}:display_name")],
             [InlineKeyboardButton(text="Переименовать", callback_data=f"memberact:{member_id}:rename")],
             [InlineKeyboardButton(text="Удалить", callback_data=f"memberact:{member_id}:delete")],
             [role_button],

@@ -16,6 +16,16 @@ from family_tasks_bot.utils.validators import invite_row_username_for_tg_id, par
 router = Router(name="family")
 
 
+def _member_card_text(member: dict) -> str:
+    telegram_name = f"@{member['username']}" if member["username"] else "-"
+    telegram_id = member["tg_user_id"]
+    return (
+        f"Участник: {member['display_name']} ({telegram_name}, Id: {telegram_id})\n"
+        f"Отображаемое имя: {member['display_name']}\n"
+        "Выберите действие:"
+    )
+
+
 @router.message(F.text == "Состав семьи")
 async def open_family_menu(message: Message, state: FSMContext) -> None:
     db, user_repo, family_repo = get_repositories()
@@ -73,7 +83,7 @@ async def family_member_callback(callback: CallbackQuery) -> None:
             await callback.answer("Участник не найден", show_alert=True)
             return
         await callback.message.answer(
-            f"Участник: {member['display_name']}\nВыберите действие:",
+            _member_card_text(member),
             reply_markup=member_actions_keyboard(
                 member_id=int(payload),
                 is_parent=member["role_type"] == "parent",
@@ -85,7 +95,7 @@ async def family_member_callback(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("memberact:"))
-async def family_member_action_callback(callback: CallbackQuery) -> None:
+async def family_member_action_callback(callback: CallbackQuery, state: FSMContext) -> None:
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if ctx.family_id is None or not can_edit_family(ctx):
@@ -102,10 +112,52 @@ async def family_member_action_callback(callback: CallbackQuery) -> None:
     elif action == "delete":
         ok = await family_repo.delete_member(member_id, ctx.family_id)
         await callback.answer("Удалено" if ok else "Нельзя удалить последнего админа", show_alert=not ok)
+    elif action == "display_name":
+        await state.set_state(FamilyStates.waiting_member_display_name)
+        await state.update_data(member_id=member_id)
+        await callback.message.answer("Введите новое отображаемое имя (2..64 символа):")
+        await callback.answer()
     elif action == "rename":
         await callback.answer("Переименование будет добавлено следующим шагом")
     else:
         await callback.answer()
+
+
+@router.message(FamilyStates.waiting_member_display_name)
+async def change_member_display_name(message: Message, state: FSMContext) -> None:
+    new_name = (message.text or "").strip()
+    if len(new_name) < 2 or len(new_name) > 64:
+        await message.answer("Отображаемое имя должно быть длиной от 2 до 64 символов.")
+        return
+    data = await state.get_data()
+    member_id = int(data.get("member_id", 0))
+    if member_id <= 0:
+        await state.clear()
+        await message.answer("Не удалось определить участника для редактирования.")
+        return
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+    if ctx.family_id is None or not can_edit_family(ctx):
+        await state.clear()
+        await message.answer("Эта команда доступна только администраторам.")
+        return
+    updated = await family_repo.update_member_display_name(member_id, ctx.family_id, new_name)
+    if not updated:
+        await state.clear()
+        await message.answer("Участник не найден.")
+        return
+    member = await family_repo.get_member(member_id, ctx.family_id)
+    await state.clear()
+    await message.answer("Отображаемое имя обновлено.")
+    if member is not None:
+        await message.answer(
+            _member_card_text(member),
+            reply_markup=member_actions_keyboard(
+                member_id=member_id,
+                is_parent=member["role_type"] == "parent",
+                is_admin=bool(member["is_admin"]),
+            ),
+        )
 
 
 @router.message(F.text == "Добавить родителя")
