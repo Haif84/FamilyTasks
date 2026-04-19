@@ -32,7 +32,45 @@ async def run_migrations(conn: aiosqlite.Connection) -> None:
             "INSERT INTO schema_migrations (id) VALUES (?)",
             (migration_id,),
         )
+    await _migrate_planned_tasks_sort_order(conn)
     await conn.commit()
+
+
+async def _migrate_planned_tasks_sort_order(conn: aiosqlite.Connection) -> None:
+    migration_id = "003_planned_tasks_sort_order"
+    async with conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ? LIMIT 1",
+        (migration_id,),
+    ) as cursor:
+        exists = await cursor.fetchone()
+    if exists is not None:
+        return
+
+    async with conn.execute("PRAGMA table_info(planned_tasks)") as cursor:
+        columns = await cursor.fetchall()
+    has_sort_order = any(str(col["name"]) == "sort_order" for col in columns)
+    if not has_sort_order:
+        await conn.execute("ALTER TABLE planned_tasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+
+    await conn.execute(
+        """
+        UPDATE planned_tasks AS p
+        SET sort_order = (
+            SELECT COUNT(*)
+            FROM planned_tasks AS p2
+            WHERE p2.family_id = p.family_id
+              AND (
+                  p2.title < p.title
+                  OR (p2.title = p.title AND p2.id <= p.id)
+              )
+        )
+        WHERE COALESCE(p.sort_order, 0) = 0
+        """
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_planned_tasks_family_sort_order ON planned_tasks(family_id, sort_order)"
+    )
+    await conn.execute("INSERT INTO schema_migrations (id) VALUES (?)", (migration_id,))
 
 
 async def seed_default_tasks(conn: aiosqlite.Connection) -> None:

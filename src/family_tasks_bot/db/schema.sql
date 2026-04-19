@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS planned_tasks (
     family_id INTEGER NOT NULL,
     title TEXT NOT NULL,
     description TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER NOT NULL DEFAULT 1,
     created_by INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -152,6 +153,9 @@ CREATE INDEX IF NOT EXISTS idx_family_members_family_active_admin
 
 CREATE INDEX IF NOT EXISTS idx_planned_tasks_family_active
     ON planned_tasks(family_id, is_active);
+
+CREATE INDEX IF NOT EXISTS idx_planned_tasks_family_sort_order
+    ON planned_tasks(family_id, sort_order);
 
 CREATE INDEX IF NOT EXISTS idx_task_instances_family_status_activated
     ON task_instances(family_id, status, activated_at);

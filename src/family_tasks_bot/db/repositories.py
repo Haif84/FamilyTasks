@@ -243,7 +243,12 @@ class PlannedTaskRepository:
 
     async def list_tasks(self, family_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
-            "SELECT id, title, is_active FROM planned_tasks WHERE family_id = ? ORDER BY title",
+            """
+            SELECT id, title, is_active, sort_order
+            FROM planned_tasks
+            WHERE family_id = ?
+            ORDER BY sort_order, title, id
+            """,
             (family_id,),
         ) as cursor:
             return await cursor.fetchall()
@@ -258,10 +263,12 @@ class PlannedTaskRepository:
     async def create_task(self, family_id: int, title: str, created_by: int) -> int:
         cur = await self.conn.execute(
             """
-            INSERT INTO planned_tasks (family_id, title, created_by)
-            VALUES (?, ?, ?)
+            INSERT INTO planned_tasks (family_id, title, sort_order, created_by)
+            VALUES (
+                ?, ?, COALESCE((SELECT MAX(sort_order) + 1 FROM planned_tasks WHERE family_id = ?), 1), ?
+            )
             """,
-            (family_id, title, created_by),
+            (family_id, title, family_id, created_by),
         )
         await self.conn.commit()
         return int(cur.lastrowid)
@@ -277,6 +284,12 @@ class PlannedTaskRepository:
         )
         await self.conn.commit()
         return (cur.rowcount or 0) > 0
+
+    async def move_task_up(self, family_id: int, task_id: int) -> bool:
+        return await self._swap_with_neighbor(family_id, task_id, direction="up")
+
+    async def move_task_down(self, family_id: int, task_id: int) -> bool:
+        return await self._swap_with_neighbor(family_id, task_id, direction="down")
 
     async def add_schedule(self, task_id: int, hhmm: str, day_of_week: int) -> None:
         await self.conn.execute(
@@ -344,7 +357,7 @@ class PlannedTaskRepository:
             FROM task_dependency_rules tdr
             JOIN planned_tasks pt ON pt.id = tdr.child_task_id
             WHERE tdr.family_id = ? AND tdr.parent_task_id = ?
-            ORDER BY pt.title
+            ORDER BY pt.sort_order, pt.title, pt.id
             """,
             (family_id, parent_task_id),
         ) as cursor:
@@ -398,6 +411,57 @@ class PlannedTaskRepository:
             stack.extend(graph.get(node, set()))
         return False
 
+    async def _swap_with_neighbor(self, family_id: int, task_id: int, direction: str) -> bool:
+        direction = direction.lower()
+        if direction not in {"up", "down"}:
+            raise ValueError(f"Unsupported direction: {direction}")
+
+        comparator = "<" if direction == "up" else ">"
+        sort_direction = "DESC" if direction == "up" else "ASC"
+        await self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            async with self.conn.execute(
+                """
+                SELECT id, sort_order
+                FROM planned_tasks
+                WHERE family_id = ? AND id = ? AND is_active = 1
+                """,
+                (family_id, task_id),
+            ) as cursor:
+                current = await cursor.fetchone()
+            if current is None:
+                await self.conn.rollback()
+                return False
+
+            async with self.conn.execute(
+                f"""
+                SELECT id, sort_order
+                FROM planned_tasks
+                WHERE family_id = ? AND is_active = 1 AND sort_order {comparator} ?
+                ORDER BY sort_order {sort_direction}, id {sort_direction}
+                LIMIT 1
+                """,
+                (family_id, int(current["sort_order"])),
+            ) as cursor:
+                neighbor = await cursor.fetchone()
+            if neighbor is None:
+                await self.conn.rollback()
+                return False
+
+            await self.conn.execute(
+                "UPDATE planned_tasks SET sort_order = ? WHERE id = ? AND family_id = ?",
+                (int(neighbor["sort_order"]), int(current["id"]), family_id),
+            )
+            await self.conn.execute(
+                "UPDATE planned_tasks SET sort_order = ? WHERE id = ? AND family_id = ?",
+                (int(current["sort_order"]), int(neighbor["id"]), family_id),
+            )
+            await self.conn.commit()
+            return True
+        except Exception:
+            await self.conn.rollback()
+            raise
+
 
 class TaskRuntimeRepository:
     def __init__(self, conn: aiosqlite.Connection) -> None:
@@ -418,7 +482,12 @@ class TaskRuntimeRepository:
 
     async def list_planned_tasks(self, family_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
-            "SELECT id, title FROM planned_tasks WHERE family_id = ? AND is_active = 1 ORDER BY title",
+            """
+            SELECT id, title
+            FROM planned_tasks
+            WHERE family_id = ? AND is_active = 1
+            ORDER BY sort_order, title, id
+            """,
             (family_id,),
         ) as cursor:
             return await cursor.fetchall()

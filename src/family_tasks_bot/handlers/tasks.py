@@ -197,20 +197,12 @@ async def planned_task_schedule_entered(message: Message, state: FSMContext) -> 
     await message.answer("Плановая задача сохранена.")
 
 
-@router.callback_query(F.data.startswith("editpt:"))
-async def edit_task_entry(callback: CallbackQuery) -> None:
-    task_id = int(callback.data.split(":")[1])
-    db, user_repo, family_repo = get_repositories()
-    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
-    if not can_edit_planned_tasks(ctx):
-        await callback.answer("Нет прав", show_alert=True)
-        return
-    repo = PlannedTaskRepository(db)
-    task = await repo.get_task(ctx.family_id, task_id)
+async def _send_task_editor(message: Message, repo: PlannedTaskRepository, family_id: int, task_id: int) -> bool:
+    task = await repo.get_task(family_id, task_id)
     if task is None:
-        await callback.answer("Задача не найдена", show_alert=True)
-        return
-    deps = await repo.list_dependencies(ctx.family_id, task_id)
+        await message.answer("Задача не найдена.")
+        return False
+    deps = await repo.list_dependencies(family_id, task_id)
     lines = [f"Задача #{task_id}: {task['title']}", "Зависимости:"]
     if deps:
         for dep in deps:
@@ -220,9 +212,14 @@ async def edit_task_entry(callback: CallbackQuery) -> None:
             )
     else:
         lines.append("- нет")
+
     dep_buttons: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text="Изменить имя", callback_data=f"editpttitle:{task_id}")],
-        [InlineKeyboardButton(text="Добавить зависимость", callback_data=f"adddep:{task_id}")]
+        [
+            InlineKeyboardButton(text="Вверх", callback_data=f"editptmove:{task_id}:up"),
+            InlineKeyboardButton(text="Вниз", callback_data=f"editptmove:{task_id}:down"),
+        ],
+        [InlineKeyboardButton(text="Добавить зависимость", callback_data=f"adddep:{task_id}")],
     ]
     for dep in deps:
         dep_buttons.append(
@@ -238,8 +235,42 @@ async def edit_task_entry(callback: CallbackQuery) -> None:
             ]
         )
     kb = InlineKeyboardMarkup(inline_keyboard=dep_buttons)
-    await callback.message.answer("\n".join(lines), reply_markup=kb)
+    await message.answer("\n".join(lines), reply_markup=kb)
+    return True
+
+
+@router.callback_query(F.data.startswith("editpt:"))
+async def edit_task_entry(callback: CallbackQuery) -> None:
+    task_id = int(callback.data.split(":")[1])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if not can_edit_planned_tasks(ctx):
+        await callback.answer("Нет прав", show_alert=True)
+        return
+    repo = PlannedTaskRepository(db)
+    shown = await _send_task_editor(callback.message, repo, ctx.family_id, task_id)
+    if not shown:
+        await callback.answer("Задача не найдена", show_alert=True)
+        return
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("editptmove:"))
+async def edit_task_move(callback: CallbackQuery) -> None:
+    _, task_id_raw, direction = callback.data.split(":")
+    task_id = int(task_id_raw)
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if not can_edit_planned_tasks(ctx):
+        await callback.answer("Нет прав", show_alert=True)
+        return
+    repo = PlannedTaskRepository(db)
+    moved = await (repo.move_task_up(ctx.family_id, task_id) if direction == "up" else repo.move_task_down(ctx.family_id, task_id))
+    if not moved:
+        await callback.answer("Перемещение недоступно", show_alert=True)
+        return
+    await _send_task_editor(callback.message, repo, ctx.family_id, task_id)
+    await callback.answer("Порядок обновлён")
 
 
 @router.callback_query(F.data.startswith("editpttitle:"))
