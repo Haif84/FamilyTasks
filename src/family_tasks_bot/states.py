@@ -23,3 +23,4 @@ class RuntimeTaskStates(StatesGroup):
 class NavStates(StatesGroup):
     in_family_menu = State()
     in_planned_tasks_menu = State()
+    in_stats_menu = State()

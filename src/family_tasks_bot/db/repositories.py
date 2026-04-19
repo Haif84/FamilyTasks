@@ -697,6 +697,37 @@ class TaskRuntimeRepository:
         ) as cursor:
             return await cursor.fetchall()
 
+    async def list_recent_actions_by_member(
+        self, family_id: int, user_id: int, limit: int, offset: int
+    ) -> list[aiosqlite.Row]:
+        async with self.conn.execute(
+            """
+            SELECT tc.completed_at
+            FROM task_completions tc
+            WHERE tc.family_id = ? AND tc.completed_by = ?
+            ORDER BY tc.completed_at DESC, tc.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (family_id, user_id, limit, offset),
+        ) as cursor:
+            return await cursor.fetchall()
+
+    async def list_recent_actions_by_task(
+        self, family_id: int, task_id: int, limit: int, offset: int
+    ) -> list[aiosqlite.Row]:
+        async with self.conn.execute(
+            """
+            SELECT tc.completed_at, u.display_name
+            FROM task_completions tc
+            JOIN users u ON u.id = tc.completed_by
+            WHERE tc.family_id = ? AND tc.planned_task_id = ?
+            ORDER BY tc.completed_at DESC, tc.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (family_id, task_id, limit, offset),
+        ) as cursor:
+            return await cursor.fetchall()
+
     async def activate_due_scheduled(self) -> list[aiosqlite.Row]:
         now_iso = datetime.now(timezone.utc).isoformat()
         async with self.conn.execute(

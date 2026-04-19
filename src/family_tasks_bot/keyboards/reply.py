@@ -44,6 +44,20 @@ def misc_menu() -> ReplyKeyboardMarkup:
     )
 
 
+def stats_menu() -> ReplyKeyboardMarkup:
+    rows = _rows_of_two(
+        [
+            "По члену семьи",
+            "По задаче",
+            "Назад",
+        ]
+    )
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
+        resize_keyboard=True,
+    )
+
+
 def family_menu(is_admin: bool) -> ReplyKeyboardMarkup:
     labels = ["Список"]
     if is_admin:
