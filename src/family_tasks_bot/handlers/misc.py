@@ -4,7 +4,7 @@ import re
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardMarkup
 
 from family_tasks_bot.deps import get_repositories
 from family_tasks_bot.db.repositories import NotificationRepository, PlannedTaskRepository, TaskRuntimeRepository
@@ -26,10 +26,7 @@ async def open_misc(message: Message) -> None:
 @router.message(F.text == "Статистика")
 async def statistics(message: Message, state: FSMContext) -> None:
     await state.set_state(NavStates.in_stats_menu)
-    await message.answer(
-        "Статистика: выберите режим просмотра.",
-        reply_markup=stats_menu(),
-    )
+    await _send_stats(message, "week", reply_markup=stats_menu())
 
 
 @router.message(NavStates.in_stats_menu, F.text == "По члену семьи")
@@ -88,7 +85,7 @@ async def statistics_command(message: Message) -> None:
     await _send_stats(message, period)
 
 
-async def _send_stats(message: Message, period: str) -> None:
+async def _send_stats(message: Message, period: str, reply_markup: ReplyKeyboardMarkup | None = None) -> None:
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if ctx.family_id is None:
@@ -112,7 +109,7 @@ async def _send_stats(message: Message, period: str) -> None:
             lines.append(f"- {row['title']}: {row['cnt']}")
     lines.append(f"Активные задачи: {active}")
     lines.append(f"Запланированные задачи: {scheduled}")
-    await message.answer("\n".join(lines))
+    await message.answer("\n".join(lines), reply_markup=reply_markup)
 
 
 async def _render_member_actions(
