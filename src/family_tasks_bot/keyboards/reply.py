@@ -1,19 +1,23 @@
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
 
+def _rows_of_two(labels: list[str]) -> list[list[KeyboardButton]]:
+    rows: list[list[KeyboardButton]] = []
+    for i in range(0, len(labels), 2):
+        pair = labels[i : i + 2]
+        rows.append([KeyboardButton(text=label) for label in pair])
+    return rows
+
+
 def main_menu(is_parent: bool, is_admin: bool) -> ReplyKeyboardMarkup:
-    rows = []
+    labels: list[str] = []
     if is_admin:
-        rows.append([KeyboardButton(text="Текущие задачи")])
-    rows.extend(
-        [
-            [KeyboardButton(text="Добавить выполненную")],
-            [KeyboardButton(text="Отменить последнее выполнение")],
-        ]
-    )
+        labels.append("Текущие задачи")
+    labels.extend(["Добавить выполненную", "Отменить последнее выполнение"])
     if is_parent:
-        rows.append([KeyboardButton(text="Добавить к выполнению")])
-    rows.append([KeyboardButton(text="Прочее")])
+        labels.append("Добавить к выполнению")
+    labels.append("Прочее")
+    rows = _rows_of_two(labels)
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
@@ -25,41 +29,34 @@ def back_menu() -> ReplyKeyboardMarkup:
 
 
 def misc_menu() -> ReplyKeyboardMarkup:
+    rows = _rows_of_two(
+        [
+            "Статистика",
+            "Состав семьи",
+            "Плановые задачи",
+            "О боте",
+            "Назад",
+        ]
+    )
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Статистика")],
-            [KeyboardButton(text="Состав семьи")],
-            [KeyboardButton(text="Плановые задачи")],
-            [KeyboardButton(text="О боте")],
-            [KeyboardButton(text="Назад")],
-        ],
+        keyboard=rows,
         resize_keyboard=True,
     )
 
 
 def family_menu(is_admin: bool) -> ReplyKeyboardMarkup:
-    rows = [[KeyboardButton(text="Список")]]
+    labels = ["Список"]
     if is_admin:
-        rows.extend(
-            [
-                [KeyboardButton(text="Править состав семьи")],
-                [KeyboardButton(text="Добавить родителя")],
-                [KeyboardButton(text="Добавить ребенка")],
-            ]
-        )
-    rows.append([KeyboardButton(text="Назад")])
+        labels.extend(["Править состав семьи", "Добавить родителя", "Добавить ребенка"])
+    labels.append("Назад")
+    rows = _rows_of_two(labels)
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
 def planned_tasks_menu(is_admin: bool) -> ReplyKeyboardMarkup:
-    rows = [[KeyboardButton(text="Список")]]
+    labels = ["Список"]
     if is_admin:
-        rows.extend(
-            [
-                [KeyboardButton(text="Править")],
-                [KeyboardButton(text="Добавить")],
-                [KeyboardButton(text="Добавить (по-умолчанию)")],
-            ]
-        )
-    rows.append([KeyboardButton(text="Назад")])
+        labels.extend(["Править", "Добавить", "Добавить (по-умолчанию)"])
+    labels.append("Назад")
+    rows = _rows_of_two(labels)
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
