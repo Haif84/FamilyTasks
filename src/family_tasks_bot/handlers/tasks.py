@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -197,11 +198,12 @@ async def planned_task_schedule_entered(message: Message, state: FSMContext) -> 
     await message.answer("Плановая задача сохранена.")
 
 
-async def _send_task_editor(message: Message, repo: PlannedTaskRepository, family_id: int, task_id: int) -> bool:
+async def _build_task_editor_payload(
+    repo: PlannedTaskRepository, family_id: int, task_id: int
+) -> tuple[str, InlineKeyboardMarkup, int] | None:
     task = await repo.get_task(family_id, task_id)
     if task is None:
-        await message.answer("Задача не найдена.")
-        return False
+        return None
     deps = await repo.list_dependencies(family_id, task_id)
     lines = [f"Задача #{task_id}: {task['title']}", f"Позиция в списке: {task['sort_order']}", "Зависимости:"]
     if deps:
@@ -235,8 +237,38 @@ async def _send_task_editor(message: Message, repo: PlannedTaskRepository, famil
             ]
         )
     kb = InlineKeyboardMarkup(inline_keyboard=dep_buttons)
-    await message.answer("\n".join(lines), reply_markup=kb)
+    return ("\n".join(lines), kb, int(task["sort_order"]))
+
+
+async def _send_task_editor(message: Message, repo: PlannedTaskRepository, family_id: int, task_id: int) -> bool:
+    payload = await _build_task_editor_payload(repo, family_id, task_id)
+    if payload is None:
+        await message.answer("Задача не найдена.")
+        return False
+    text, kb, _ = payload
+    await message.answer(text, reply_markup=kb)
     return True
+
+
+async def _refresh_task_editor_message(
+    message: Message, repo: PlannedTaskRepository, family_id: int, task_id: int
+) -> tuple[bool, int | None]:
+    payload = await _build_task_editor_payload(repo, family_id, task_id)
+    if payload is None:
+        await message.answer("Задача не найдена.")
+        return (False, None)
+    text, kb, sort_order = payload
+    try:
+        await message.edit_text(text, reply_markup=kb)
+    except TelegramBadRequest as exc:
+        err = str(exc).lower()
+        if "message is not modified" in err:
+            pass
+        elif "message can't be edited" in err or "message to edit not found" in err or "there is no text in the message" in err:
+            await message.answer(text, reply_markup=kb)
+        else:
+            raise
+    return (True, sort_order)
 
 
 @router.callback_query(F.data.startswith("editpt:"))
@@ -269,12 +301,14 @@ async def edit_task_move(callback: CallbackQuery) -> None:
     if not moved:
         await callback.answer("Перемещение недоступно", show_alert=True)
         return
-    task = await repo.get_task(ctx.family_id, task_id)
-    await _send_task_editor(callback.message, repo, ctx.family_id, task_id)
-    if task is None:
+    updated, sort_order = await _refresh_task_editor_message(callback.message, repo, ctx.family_id, task_id)
+    if not updated:
+        await callback.answer("Задача не найдена", show_alert=True)
+        return
+    if sort_order is None:
         await callback.answer("Порядок обновлён")
         return
-    await callback.answer(f"Порядок обновлён. Текущая позиция: {task['sort_order']}")
+    await callback.answer(f"Порядок обновлён. Текущая позиция: {sort_order}")
 
 
 @router.callback_query(F.data.startswith("editpttitle:"))
