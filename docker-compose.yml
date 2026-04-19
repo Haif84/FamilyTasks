@@ -18,6 +18,7 @@ services:
       # DB_PATH без ${DB_PATH:-…}: иначе из .env (часто путь с Windows) подставится в compose и сломает SQLite.
       DB_PATH: /app/data/family_tasks.sqlite3
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      APP_VERSION: ${APP_VERSION:-}
       PYTHONUNBUFFERED: ${PYTHONUNBUFFERED:-1}
     volumes:
       - bot_data:/app/data

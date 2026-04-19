@@ -12,7 +12,7 @@ from family_tasks_bot.db.repositories import NotificationRepository, PlannedTask
 from family_tasks_bot.handlers.common import deny_if_no_family
 from family_tasks_bot.keyboards.inline import tasks_keyboard
 from family_tasks_bot.keyboards.reply import back_menu, planned_tasks_menu
-from family_tasks_bot.services.auth import can_add_to_execution, can_edit_planned_tasks
+from family_tasks_bot.services.auth import AccessContext, can_add_to_execution, can_edit_planned_tasks
 from family_tasks_bot.services.bootstrap import ensure_member_context
 from family_tasks_bot.services.notifications import notify_family
 from family_tasks_bot.states import NavStates, PlannedTaskStates, RuntimeTaskStates
@@ -21,11 +21,34 @@ from family_tasks_bot.utils.validators import is_valid_hhmm
 router = Router(name="tasks")
 
 
+async def send_planned_tasks_overview(message: Message, ctx: AccessContext) -> None:
+    db, _, _ = get_repositories()
+    repo = PlannedTaskRepository(db)
+    tasks = await repo.list_tasks(ctx.family_id)
+    if not tasks:
+        await message.answer("Список плановых задач пуст.")
+        return
+    if can_edit_planned_tasks(ctx):
+        buttons = [{"id": str(task["id"]), "title": str(task["title"])} for task in tasks]
+        await message.answer(
+            "Плановые задачи — выберите задачу для редактирования:",
+            reply_markup=tasks_keyboard(buttons, "editpt"),
+        )
+        return
+    lines = ["Список плановых задач:"]
+    for task in tasks:
+        lines.append(f"- #{task['id']} {task['title']}")
+    await message.answer("\n".join(lines))
+
+
 @router.message(F.text == "Текущие задачи")
 async def current_tasks(message: Message) -> None:
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if await deny_if_no_family(message, ctx):
+        return
+    if not ctx.is_admin:
+        await message.answer("Раздел «Текущие задачи» доступен только администраторам семьи.")
         return
     runtime = TaskRuntimeRepository(db)
     rows = await runtime.list_active_instances(ctx.family_id)
@@ -100,9 +123,13 @@ async def planned_tasks_menu_open(message: Message, state: FSMContext) -> None:
         "Плановые задачи",
         reply_markup=planned_tasks_menu(is_admin=ctx.is_admin),
     )
+    await send_planned_tasks_overview(message, ctx)
 
 
-@router.message(F.text.in_({"Править", "Добавить", "Добавить (по-умолчанию)"}))
+@router.message(
+    NavStates.in_planned_tasks_menu,
+    F.text.in_({"Править", "Добавить", "Добавить (по-умолчанию)"}),
+)
 async def planned_tasks_admin_actions(message: Message, state: FSMContext) -> None:
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
@@ -113,9 +140,7 @@ async def planned_tasks_admin_actions(message: Message, state: FSMContext) -> No
         return
     repo = PlannedTaskRepository(db)
     if message.text == "Править":
-        tasks = await repo.list_tasks(ctx.family_id)
-        buttons = [{"id": str(task["id"]), "title": str(task["title"])} for task in tasks]
-        await message.answer("Выберите задачу для редактирования:", reply_markup=tasks_keyboard(buttons, "editpt"))
+        await send_planned_tasks_overview(message, ctx)
         return
     if message.text == "Добавить":
         await state.set_state(PlannedTaskStates.waiting_title)
@@ -135,15 +160,7 @@ async def list_planned_tasks(message: Message) -> None:
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if await deny_if_no_family(message, ctx):
         return
-    repo = PlannedTaskRepository(db)
-    tasks = await repo.list_tasks(ctx.family_id)
-    if not tasks:
-        await message.answer("Список плановых задач пуст.")
-        return
-    lines = ["Список плановых задач:"]
-    for task in tasks:
-        lines.append(f"- #{task['id']} {task['title']}")
-    await message.answer("\n".join(lines))
+    await send_planned_tasks_overview(message, ctx)
 
 
 @router.message(PlannedTaskStates.waiting_title)

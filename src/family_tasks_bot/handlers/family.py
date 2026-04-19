@@ -42,7 +42,7 @@ async def show_family_list(message: Message) -> None:
     await message.answer("\n".join(lines))
 
 
-@router.message(F.text == "Править")
+@router.message(NavStates.in_family_menu, F.text == "Править состав семьи")
 async def family_edit_open(message: Message) -> None:
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)

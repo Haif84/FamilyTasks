@@ -10,6 +10,7 @@ from family_tasks_bot.deps import get_repositories
 from family_tasks_bot.db.repositories import NotificationRepository, TaskRuntimeRepository
 from family_tasks_bot.keyboards.reply import main_menu, misc_menu
 from family_tasks_bot.services.bootstrap import ensure_member_context
+from family_tasks_bot.version import APP_VERSION
 router = Router(name="misc")
 QUIET_RE = re.compile(r"^/quiet\s+(\d{2}:\d{2})-(\d{2}:\d{2})(?:\s+(all|[0-6]))?$")
 STATS_RE = re.compile(r"^/stats(?:\s+(day|week|month))?$")
@@ -23,6 +24,11 @@ async def open_misc(message: Message) -> None:
 @router.message(F.text == "Статистика")
 async def statistics(message: Message) -> None:
     await _send_stats(message, "week")
+
+
+@router.message(F.text == "О боте")
+async def about_bot(message: Message) -> None:
+    await message.answer(f"Family Tasks Bot\nВерсия: {APP_VERSION}")
 
 
 @router.message(F.text.regexp(r"^/stats"))
@@ -67,7 +73,10 @@ async def back_to_main(message: Message, state: FSMContext) -> None:
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     await state.clear()
-    await message.answer("Главное меню", reply_markup=main_menu(is_parent=ctx.is_parent))
+    await message.answer(
+        "Главное меню",
+        reply_markup=main_menu(is_parent=ctx.is_parent, is_admin=ctx.is_admin),
+    )
 
 
 @router.message(F.text.regexp(r"^/quiet\s+"))

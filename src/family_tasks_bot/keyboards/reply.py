@@ -1,12 +1,16 @@
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
 
-def main_menu(is_parent: bool) -> ReplyKeyboardMarkup:
-    rows = [
-        [KeyboardButton(text="Текущие задачи")],
-        [KeyboardButton(text="Добавить выполненную")],
-        [KeyboardButton(text="Отменить последнее выполнение")],
-    ]
+def main_menu(is_parent: bool, is_admin: bool) -> ReplyKeyboardMarkup:
+    rows = []
+    if is_admin:
+        rows.append([KeyboardButton(text="Текущие задачи")])
+    rows.extend(
+        [
+            [KeyboardButton(text="Добавить выполненную")],
+            [KeyboardButton(text="Отменить последнее выполнение")],
+        ]
+    )
     if is_parent:
         rows.append([KeyboardButton(text="Добавить к выполнению")])
     rows.append([KeyboardButton(text="Прочее")])
@@ -26,6 +30,7 @@ def misc_menu() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="Статистика")],
             [KeyboardButton(text="Состав семьи")],
             [KeyboardButton(text="Плановые задачи")],
+            [KeyboardButton(text="О боте")],
             [KeyboardButton(text="Назад")],
         ],
         resize_keyboard=True,
@@ -37,7 +42,7 @@ def family_menu(is_admin: bool) -> ReplyKeyboardMarkup:
     if is_admin:
         rows.extend(
             [
-                [KeyboardButton(text="Править")],
+                [KeyboardButton(text="Править состав семьи")],
                 [KeyboardButton(text="Добавить родителя")],
                 [KeyboardButton(text="Добавить ребенка")],
             ]
