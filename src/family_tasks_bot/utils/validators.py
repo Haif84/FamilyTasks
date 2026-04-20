@@ -1,5 +1,6 @@
 import re
 from typing import Literal
+from datetime import timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{4,31}$")
@@ -8,6 +9,11 @@ TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 TG_USER_ID_RE = re.compile(r"^\d{1,15}$")
 
 InviteInputKind = Literal["username", "tg_id"]
+FALLBACK_TIMEZONES = {
+    "UTC": timezone.utc,
+    "Etc/UTC": timezone.utc,
+    "Europe/Moscow": timezone(timedelta(hours=3)),
+}
 
 
 def is_valid_username(value: str) -> bool:
@@ -47,6 +53,8 @@ def is_valid_timezone(value: str) -> bool:
     raw = (value or "").strip()
     if not raw:
         return False
+    if raw in FALLBACK_TIMEZONES:
+        return True
     try:
         ZoneInfo(raw)
     except ZoneInfoNotFoundError:

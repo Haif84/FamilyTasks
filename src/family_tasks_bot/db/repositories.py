@@ -6,6 +6,12 @@ from zoneinfo import ZoneInfo
 
 import aiosqlite
 
+FALLBACK_TIMEZONES = {
+    "UTC": timezone.utc,
+    "Etc/UTC": timezone.utc,
+    "Europe/Moscow": timezone(timedelta(hours=3)),
+}
+
 
 class UserRepository:
     def __init__(self, conn: aiosqlite.Connection) -> None:
@@ -843,7 +849,7 @@ class TaskRuntimeRepository:
         try:
             tz = ZoneInfo(timezone_name)
         except Exception:
-            tz = timezone.utc
+            tz = FALLBACK_TIMEZONES.get(timezone_name, timezone.utc)
         now_local = datetime.now(timezone.utc).astimezone(tz)
         local_day_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
         since_local = local_day_start - timedelta(days=max(period_days - 1, 0))
