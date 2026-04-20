@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -12,10 +14,36 @@ from family_tasks_bot.keyboards.reply import main_menu, misc_menu, rooms_menu, s
 from family_tasks_bot.services.bootstrap import ensure_member_context
 from family_tasks_bot.states import NavStates, RoomStates
 from family_tasks_bot.version import APP_VERSION
+
 router = Router(name="misc")
 QUIET_RE = re.compile(r"^/quiet\s+(\d{2}:\d{2})-(\d{2}:\d{2})(?:\s+(all|[0-6]))?$")
 STATS_RE = re.compile(r"^/stats(?:\s+(day|week|month))?$")
 PAGE_SIZE = 10
+
+
+def _family_tzinfo(timezone_name: str) -> ZoneInfo | timezone:
+    try:
+        return ZoneInfo(timezone_name)
+    except Exception:
+        return timezone.utc
+
+
+def _to_family_local_timestamp(raw_value: str, timezone_name: str) -> str:
+    raw = (raw_value or "").strip()
+    if not raw:
+        return raw_value
+    parsed: datetime | None = None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return raw_value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    local = parsed.astimezone(_family_tzinfo(timezone_name))
+    return local.strftime("%Y-%m-%d %H:%M")
 
 
 def _rooms_editor_keyboard(rooms: list) -> InlineKeyboardMarkup:
@@ -147,10 +175,11 @@ async def _send_stats(message: Message, period: str, reply_markup: ReplyKeyboard
         return
     runtime = TaskRuntimeRepository(db)
     days = {"day": 1, "week": 7, "month": 30}[period]
-    by_user, active, scheduled = await runtime.stats_summary(ctx.family_id, days)
-    by_task = await runtime.stats_by_task_type(ctx.family_id, days)
+    timezone_name = ctx.family_timezone or "UTC"
+    by_user, active, scheduled = await runtime.stats_summary(ctx.family_id, days, timezone_name)
+    by_task = await runtime.stats_by_task_type(ctx.family_id, days, timezone_name)
     title = {"day": "день", "week": "неделю", "month": "месяц"}[period]
-    lines = [f"Статистика за {title}:"]
+    lines = [f"Статистика за {title}:", f"Часовой пояс семьи: {timezone_name}"]
     if by_user:
         lines.append("Выполнено по участникам:")
         for row in by_user:
@@ -167,7 +196,12 @@ async def _send_stats(message: Message, period: str, reply_markup: ReplyKeyboard
 
 
 async def _render_member_actions(
-    callback: CallbackQuery, family_id: int, user_id: int, offset: int, runtime: TaskRuntimeRepository
+    callback: CallbackQuery,
+    family_id: int,
+    user_id: int,
+    offset: int,
+    runtime: TaskRuntimeRepository,
+    timezone_name: str,
 ) -> None:
     rows = await runtime.list_recent_actions_by_member(family_id, user_id, PAGE_SIZE + 1, offset)
     has_more = len(rows) > PAGE_SIZE
@@ -175,7 +209,8 @@ async def _render_member_actions(
     lines = ["Последние действия участника:"]
     if entries:
         for row in entries:
-            lines.append(f"- {row['completed_at']}")
+            local_completed_at = _to_family_local_timestamp(str(row["completed_at"]), timezone_name)
+            lines.append(f"- {local_completed_at}")
     else:
         lines.append("Действий пока нет.")
     nav: list[InlineKeyboardButton] = []
@@ -189,7 +224,12 @@ async def _render_member_actions(
 
 
 async def _render_task_actions(
-    callback: CallbackQuery, family_id: int, task_id: int, offset: int, runtime: TaskRuntimeRepository
+    callback: CallbackQuery,
+    family_id: int,
+    task_id: int,
+    offset: int,
+    runtime: TaskRuntimeRepository,
+    timezone_name: str,
 ) -> None:
     rows = await runtime.list_recent_actions_by_task(family_id, task_id, PAGE_SIZE + 1, offset)
     has_more = len(rows) > PAGE_SIZE
@@ -197,7 +237,8 @@ async def _render_task_actions(
     lines = ["Последние действия по задаче:"]
     if entries:
         for row in entries:
-            lines.append(f"- {row['completed_at']} — {row['display_name']}")
+            local_completed_at = _to_family_local_timestamp(str(row["completed_at"]), timezone_name)
+            lines.append(f"- {local_completed_at} — {row['display_name']}")
     else:
         lines.append("Действий пока нет.")
     nav: list[InlineKeyboardButton] = []
@@ -221,7 +262,8 @@ async def stats_member_callback(callback: CallbackQuery) -> None:
         await callback.answer("Вы не состоите в семье.", show_alert=True)
         return
     runtime = TaskRuntimeRepository(db)
-    await _render_member_actions(callback, ctx.family_id, user_id, offset, runtime)
+    timezone_name = ctx.family_timezone or "UTC"
+    await _render_member_actions(callback, ctx.family_id, user_id, offset, runtime, timezone_name)
     await callback.answer()
 
 
@@ -236,7 +278,8 @@ async def stats_task_callback(callback: CallbackQuery) -> None:
         await callback.answer("Вы не состоите в семье.", show_alert=True)
         return
     runtime = TaskRuntimeRepository(db)
-    await _render_task_actions(callback, ctx.family_id, task_id, offset, runtime)
+    timezone_name = ctx.family_timezone or "UTC"
+    await _render_task_actions(callback, ctx.family_id, task_id, offset, runtime, timezone_name)
     await callback.answer()
 
 

@@ -95,7 +95,7 @@ async def test_child_cannot_add_to_execution() -> None:
         await DP.feed_update(bot, _make_message_update(2, 1002, "Добавить к выполнению", "kid"))
     finally:
         reset_deps(token)
-    assert any("только родителям" in msg for msg in bot.sent_texts)
+    assert any("только администраторам" in msg for msg in bot.sent_texts)
     await conn.close()
     await bot.session.close()
 

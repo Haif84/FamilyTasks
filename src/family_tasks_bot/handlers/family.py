@@ -11,7 +11,7 @@ from family_tasks_bot.keyboards.reply import family_menu
 from family_tasks_bot.states import FamilyStates, NavStates
 from family_tasks_bot.services.auth import can_edit_family
 from family_tasks_bot.services.bootstrap import ensure_member_context
-from family_tasks_bot.utils.validators import invite_row_username_for_tg_id, parse_invite_input
+from family_tasks_bot.utils.validators import invite_row_username_for_tg_id, is_valid_timezone, parse_invite_input
 
 router = Router(name="family")
 
@@ -59,6 +59,46 @@ async def show_family_list(message: Message) -> None:
         admin = " (админ)" if member["is_admin"] else ""
         lines.append(f"- {member['display_name']}: {role}{admin}")
     await message.answer("\n".join(lines))
+
+
+@router.message(NavStates.in_family_menu, F.text == "Часовой пояс семьи")
+async def family_timezone_settings(message: Message, state: FSMContext) -> None:
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+    if await deny_if_no_family(message, ctx):
+        return
+    timezone_name = await family_repo.get_family_timezone(ctx.family_id)
+    await message.answer(f"Текущий часовой пояс семьи: {timezone_name}")
+    if not can_edit_family(ctx):
+        return
+    await state.set_state(FamilyStates.waiting_family_timezone)
+    await message.answer(
+        "Введите новый часовой пояс в формате IANA, например Europe/Moscow.\n"
+        "Для отмены используйте кнопку «Назад»."
+    )
+
+
+@router.message(FamilyStates.waiting_family_timezone)
+async def set_family_timezone(message: Message, state: FSMContext) -> None:
+    timezone_name = (message.text or "").strip()
+    if not is_valid_timezone(timezone_name):
+        await message.answer("Некорректный часовой пояс. Пример: Europe/Moscow")
+        return
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+    if ctx.family_id is None or not can_edit_family(ctx):
+        await state.clear()
+        await message.answer("Эта команда доступна только администраторам.")
+        return
+    updated = await family_repo.update_family_timezone(ctx.family_id, timezone_name)
+    await state.clear()
+    if not updated:
+        await message.answer("Не удалось обновить часовой пояс.")
+        return
+    await message.answer(
+        f"Часовой пояс семьи обновлен: {timezone_name}",
+        reply_markup=family_menu(is_admin=ctx.is_admin),
+    )
 
 
 @router.message(NavStates.in_family_menu, F.text == "Править состав семьи")

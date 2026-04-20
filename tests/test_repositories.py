@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import aiosqlite
@@ -70,4 +71,29 @@ async def test_stats_by_task_type() -> None:
     titles = {row["title"] for row in by_task}
     assert "Feed dogs" in titles
     assert "Walk dogs" in titles
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_stats_timezone_boundary_respected() -> None:
+    conn = await _init_db()
+    planned = PlannedTaskRepository(conn)
+    runtime = TaskRuntimeRepository(conn)
+    t1 = await planned.create_task(1, "Laundry", 1)
+    instance_id = await runtime.create_instance(1, t1, 1, "manual")
+    await runtime.complete_instance(instance_id, 1, "current")
+    utc_since = datetime.strptime(runtime._stats_since_utc(1, "UTC"), "%Y-%m-%d %H:%M:%S")
+    moscow_since = datetime.strptime(runtime._stats_since_utc(1, "Europe/Moscow"), "%Y-%m-%d %H:%M:%S")
+    assert moscow_since < utc_since
+    midpoint = moscow_since + (utc_since - moscow_since) / 2
+    completion_at = midpoint.strftime("%Y-%m-%d %H:%M:%S")
+    await conn.execute("UPDATE task_completions SET completed_at = ? WHERE family_id = 1", (completion_at,))
+    await conn.commit()
+
+    by_user_utc, _, _ = await runtime.stats_summary(1, 1, "UTC")
+    assert len(by_user_utc) == 0
+
+    by_user_moscow, _, _ = await runtime.stats_summary(1, 1, "Europe/Moscow")
+    assert len(by_user_moscow) == 1
+    assert int(by_user_moscow[0]["cnt"]) == 1
     await conn.close()
