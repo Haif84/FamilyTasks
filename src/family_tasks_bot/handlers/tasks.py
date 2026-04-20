@@ -376,7 +376,7 @@ async def _planned_tasks_edit_root_keyboard(
                 [
                     InlineKeyboardButton(
                         text=_task_caption(task),
-                        callback_data=f"editpt:{task['id']}",
+                        callback_data=f"editpt:{task['id']}:0",
                     )
                 ]
             )
@@ -743,7 +743,7 @@ async def planned_task_schedule_entered(message: Message, state: FSMContext) -> 
 
 
 async def _build_task_editor_payload(
-    repo: PlannedTaskRepository, family_id: int, task_id: int
+    repo: PlannedTaskRepository, family_id: int, task_id: int, origin_group_id: int = 0
 ) -> tuple[str, InlineKeyboardMarkup, int] | None:
     task = await repo.get_task(family_id, task_id)
     if task is None:
@@ -774,34 +774,34 @@ async def _build_task_editor_payload(
         lines.append("- нет")
 
     dep_buttons: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text="Изменить имя", callback_data=f"editpttitle:{task_id}")],
+        [InlineKeyboardButton(text="Изменить имя", callback_data=f"editpttitle:{task_id}:{origin_group_id}")],
         [
             InlineKeyboardButton(
                 text="Без комментария" if requires_comment else "С комментарием",
-                callback_data=f"editptcomment:{task_id}:{0 if requires_comment else 1}",
+                callback_data=f"editptcomment:{task_id}:{0 if requires_comment else 1}:{origin_group_id}",
             )
         ],
         [
             InlineKeyboardButton(
                 text=("✓ " if effort_stars == stars else "") + ("★" * stars),
-                callback_data=f"editpteffort:{task_id}:{stars}",
+                callback_data=f"editpteffort:{task_id}:{stars}:{origin_group_id}",
             )
             for stars in range(1, 6)
         ],
-        [InlineKeyboardButton(text="Группа", callback_data=f"editptgroup:{task_id}")],
-        [InlineKeyboardButton(text="Удалить", callback_data=f"editptdelask:{task_id}")],
+        [InlineKeyboardButton(text="Группа", callback_data=f"editptgroup:{task_id}:{origin_group_id}")],
+        [InlineKeyboardButton(text="Удалить", callback_data=f"editptdelask:{task_id}:{origin_group_id}")],
         [
             InlineKeyboardButton(
                 text="Деактивировать" if is_active else "Активировать",
-                callback_data=f"editptactive:{task_id}:{0 if is_active else 1}",
+                callback_data=f"editptactive:{task_id}:{0 if is_active else 1}:{origin_group_id}",
             )
         ],
         [
-            InlineKeyboardButton(text="Вверх", callback_data=f"editptmove:{task_id}:up"),
-            InlineKeyboardButton(text="Вниз", callback_data=f"editptmove:{task_id}:down"),
+            InlineKeyboardButton(text="Вверх", callback_data=f"editptmove:{task_id}:up:{origin_group_id}"),
+            InlineKeyboardButton(text="Вниз", callback_data=f"editptmove:{task_id}:down:{origin_group_id}"),
         ],
         [InlineKeyboardButton(text="Добавить зависимость", callback_data=f"adddep:{task_id}")],
-        [InlineKeyboardButton(text="Назад", callback_data="grouptasks:0")],
+        [InlineKeyboardButton(text="Назад", callback_data=f"grouptasks:{origin_group_id}")],
     ]
     for dep in deps:
         dep_buttons.append(
@@ -820,8 +820,14 @@ async def _build_task_editor_payload(
     return ("\n".join(lines), kb, int(task["sort_order"]))
 
 
-async def _send_task_editor(message: Message, repo: PlannedTaskRepository, family_id: int, task_id: int) -> bool:
-    payload = await _build_task_editor_payload(repo, family_id, task_id)
+async def _send_task_editor(
+    message: Message,
+    repo: PlannedTaskRepository,
+    family_id: int,
+    task_id: int,
+    origin_group_id: int = 0,
+) -> bool:
+    payload = await _build_task_editor_payload(repo, family_id, task_id, origin_group_id)
     if payload is None:
         await message.answer("Задача не найдена.")
         return False
@@ -835,10 +841,11 @@ async def _refresh_task_editor_message(
     repo: PlannedTaskRepository,
     family_id: int,
     task_id: int,
+    origin_group_id: int = 0,
     *,
     allow_send_fallback: bool = True,
 ) -> tuple[bool, int | None]:
-    payload = await _build_task_editor_payload(repo, family_id, task_id)
+    payload = await _build_task_editor_payload(repo, family_id, task_id, origin_group_id)
     if payload is None:
         await message.answer("Задача не найдена.")
         return (False, None)
@@ -864,14 +871,16 @@ async def _refresh_task_editor_message(
 
 @router.callback_query(F.data.startswith("editpt:"))
 async def edit_task_entry(callback: CallbackQuery) -> None:
-    task_id = int(callback.data.split(":")[1])
+    parts = callback.data.split(":")
+    task_id = int(parts[1])
+    origin_group_id = int(parts[2]) if len(parts) > 2 else 0
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if not can_edit_planned_tasks(ctx):
         await callback.answer("Нет прав", show_alert=True)
         return
     repo = PlannedTaskRepository(db)
-    shown = await _send_task_editor(callback.message, repo, ctx.family_id, task_id)
+    shown = await _send_task_editor(callback.message, repo, ctx.family_id, task_id, origin_group_id)
     if not shown:
         await callback.answer("Задача не найдена", show_alert=True)
         return
@@ -880,8 +889,9 @@ async def edit_task_entry(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("editptmove:"))
 async def edit_task_move(callback: CallbackQuery) -> None:
-    _, task_id_raw, direction = callback.data.split(":")
+    _, task_id_raw, direction, *rest = callback.data.split(":")
     task_id = int(task_id_raw)
+    origin_group_id = int(rest[0]) if rest else 0
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if not can_edit_planned_tasks(ctx):
@@ -892,7 +902,13 @@ async def edit_task_move(callback: CallbackQuery) -> None:
     if not moved:
         await callback.answer("Перемещение недоступно", show_alert=True)
         return
-    updated, sort_order = await _refresh_task_editor_message(callback.message, repo, ctx.family_id, task_id)
+    updated, sort_order = await _refresh_task_editor_message(
+        callback.message,
+        repo,
+        ctx.family_id,
+        task_id,
+        origin_group_id,
+    )
     if not updated:
         await callback.answer("Задача не найдена", show_alert=True)
         return
@@ -904,9 +920,10 @@ async def edit_task_move(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("editptactive:"))
 async def edit_task_active_toggle(callback: CallbackQuery) -> None:
-    _, task_id_raw, active_raw = callback.data.split(":")
+    _, task_id_raw, active_raw, *rest = callback.data.split(":")
     task_id = int(task_id_raw)
     target_active = active_raw == "1"
+    origin_group_id = int(rest[0]) if rest else 0
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if not can_edit_planned_tasks(ctx):
@@ -917,7 +934,13 @@ async def edit_task_active_toggle(callback: CallbackQuery) -> None:
     if not updated:
         await callback.answer("Задача не найдена", show_alert=True)
         return
-    refreshed, _ = await _refresh_task_editor_message(callback.message, repo, ctx.family_id, task_id)
+    refreshed, _ = await _refresh_task_editor_message(
+        callback.message,
+        repo,
+        ctx.family_id,
+        task_id,
+        origin_group_id,
+    )
     if not refreshed:
         await callback.answer("Задача не найдена", show_alert=True)
         return
@@ -926,9 +949,10 @@ async def edit_task_active_toggle(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("editptcomment:"))
 async def edit_task_comment_toggle(callback: CallbackQuery) -> None:
-    _, task_id_raw, requires_comment_raw = callback.data.split(":")
+    _, task_id_raw, requires_comment_raw, *rest = callback.data.split(":")
     task_id = int(task_id_raw)
     target_requires_comment = requires_comment_raw == "1"
+    origin_group_id = int(rest[0]) if rest else 0
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if not can_edit_planned_tasks(ctx):
@@ -939,7 +963,13 @@ async def edit_task_comment_toggle(callback: CallbackQuery) -> None:
     if not updated:
         await callback.answer("Задача не найдена", show_alert=True)
         return
-    refreshed, _ = await _refresh_task_editor_message(callback.message, repo, ctx.family_id, task_id)
+    refreshed, _ = await _refresh_task_editor_message(
+        callback.message,
+        repo,
+        ctx.family_id,
+        task_id,
+        origin_group_id,
+    )
     if not refreshed:
         await callback.answer("Задача не найдена", show_alert=True)
         return
@@ -948,9 +978,10 @@ async def edit_task_comment_toggle(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("editpteffort:"))
 async def edit_task_effort_stars(callback: CallbackQuery) -> None:
-    _, task_id_raw, stars_raw = callback.data.split(":")
+    _, task_id_raw, stars_raw, *rest = callback.data.split(":")
     task_id = int(task_id_raw)
     target_stars = max(1, min(5, int(stars_raw)))
+    origin_group_id = int(rest[0]) if rest else 0
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if not can_edit_planned_tasks(ctx):
@@ -961,7 +992,13 @@ async def edit_task_effort_stars(callback: CallbackQuery) -> None:
     if not updated:
         await callback.answer("Задача не найдена", show_alert=True)
         return
-    refreshed, _ = await _refresh_task_editor_message(callback.message, repo, ctx.family_id, task_id)
+    refreshed, _ = await _refresh_task_editor_message(
+        callback.message,
+        repo,
+        ctx.family_id,
+        task_id,
+        origin_group_id,
+    )
     if not refreshed:
         await callback.answer("Задача не найдена", show_alert=True)
         return
@@ -970,7 +1007,9 @@ async def edit_task_effort_stars(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("editpttitle:"))
 async def edit_task_title_start(callback: CallbackQuery, state: FSMContext) -> None:
-    task_id = int(callback.data.split(":")[1])
+    parts = callback.data.split(":")
+    task_id = int(parts[1])
+    origin_group_id = int(parts[2]) if len(parts) > 2 else 0
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if not can_edit_planned_tasks(ctx):
@@ -982,14 +1021,16 @@ async def edit_task_title_start(callback: CallbackQuery, state: FSMContext) -> N
         await callback.answer("Задача не найдена", show_alert=True)
         return
     await state.set_state(PlannedTaskStates.waiting_edit_title)
-    await state.update_data(edit_task_id=task_id)
+    await state.update_data(edit_task_id=task_id, edit_task_origin_group_id=origin_group_id)
     await callback.message.answer(f"Текущее имя: {task['title']}\nВведите новое название задачи:")
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("editptgroup:"))
 async def edit_task_group_start(callback: CallbackQuery) -> None:
-    task_id = int(callback.data.split(":")[1])
+    parts = callback.data.split(":")
+    task_id = int(parts[1])
+    origin_group_id = int(parts[2]) if len(parts) > 2 else 0
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if not can_edit_planned_tasks(ctx):
@@ -1008,13 +1049,15 @@ async def edit_task_group_start(callback: CallbackQuery) -> None:
             [
                 InlineKeyboardButton(
                     text=f"{marker}{group['name']}",
-                    callback_data=f"setptgroup:{task_id}:{group['id']}",
+                    callback_data=f"setptgroup:{task_id}:{group['id']}:{origin_group_id}",
                 )
             ]
         )
     no_group_marker = "✓ " if task["group_id"] is None else ""
-    rows.append([InlineKeyboardButton(text=f"{no_group_marker}Без группы", callback_data=f"setptgroup:{task_id}:none")])
-    rows.append([InlineKeyboardButton(text="Назад к задаче", callback_data=f"editpt:{task_id}")])
+    rows.append(
+        [InlineKeyboardButton(text=f"{no_group_marker}Без группы", callback_data=f"setptgroup:{task_id}:none:{origin_group_id}")]
+    )
+    rows.append([InlineKeyboardButton(text="Назад к задаче", callback_data=f"editpt:{task_id}:{origin_group_id}")])
     try:
         await callback.message.edit_text(
             "Выберите группу для задачи:",
@@ -1028,9 +1071,10 @@ async def edit_task_group_start(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("setptgroup:"))
 async def edit_task_group_set(callback: CallbackQuery) -> None:
-    _, task_id_raw, group_token = callback.data.split(":")
+    _, task_id_raw, group_token, *rest = callback.data.split(":")
     task_id = int(task_id_raw)
     group_id = None if group_token == "none" else int(group_token)
+    origin_group_id = int(rest[0]) if rest else 0
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if not can_edit_planned_tasks(ctx):
@@ -1046,6 +1090,7 @@ async def edit_task_group_set(callback: CallbackQuery) -> None:
         repo,
         ctx.family_id,
         task_id,
+        origin_group_id,
         allow_send_fallback=False,
     )
     if not refreshed:
@@ -1056,7 +1101,9 @@ async def edit_task_group_set(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("editptdelask:"))
 async def edit_task_delete_ask(callback: CallbackQuery) -> None:
-    task_id = int(callback.data.split(":")[1])
+    parts = callback.data.split(":")
+    task_id = int(parts[1])
+    origin_group_id = int(parts[2]) if len(parts) > 2 else 0
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if not can_edit_planned_tasks(ctx):
@@ -1077,8 +1124,8 @@ async def edit_task_delete_ask(callback: CallbackQuery) -> None:
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Нет", callback_data=f"editptdelno:{task_id}"),
-                InlineKeyboardButton(text="Да", callback_data=f"editptdelyes:{task_id}"),
+                InlineKeyboardButton(text="Нет", callback_data=f"editptdelno:{task_id}:{origin_group_id}"),
+                InlineKeyboardButton(text="Да", callback_data=f"editptdelyes:{task_id}:{origin_group_id}"),
             ]
         ]
     )
@@ -1091,14 +1138,16 @@ async def edit_task_delete_ask(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("editptdelno:"))
 async def edit_task_delete_no(callback: CallbackQuery) -> None:
-    task_id = int(callback.data.split(":")[1])
+    parts = callback.data.split(":")
+    task_id = int(parts[1])
+    origin_group_id = int(parts[2]) if len(parts) > 2 else 0
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if not can_edit_planned_tasks(ctx):
         await callback.answer("Нет прав", show_alert=True)
         return
     repo = PlannedTaskRepository(db)
-    shown = await _send_task_editor(callback.message, repo, ctx.family_id, task_id)
+    shown = await _send_task_editor(callback.message, repo, ctx.family_id, task_id, origin_group_id)
     if not shown:
         await callback.answer("Задача не найдена", show_alert=True)
         return
@@ -1191,7 +1240,7 @@ async def planned_tasks_group_view(callback: CallbackQuery) -> None:
         return
     tasks = await repo.list_tasks_by_group(ctx.family_id, group_id)
     task_rows = [
-        [InlineKeyboardButton(text=_task_caption(task), callback_data=f"editpt:{task['id']}")]
+        [InlineKeyboardButton(text=_task_caption(task), callback_data=f"editpt:{task['id']}:{group_id}")]
         for task in tasks
     ]
     task_rows.append([InlineKeyboardButton(text="Назад", callback_data="grouptasks:0")])
