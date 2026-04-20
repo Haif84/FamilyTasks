@@ -179,6 +179,18 @@ class FamilyRepository:
         ) as cursor:
             return await cursor.fetchall()
 
+    async def list_pending_invites(self, family_id: int) -> list[aiosqlite.Row]:
+        async with self.conn.execute(
+            """
+            SELECT username, role_type, is_admin, created_at
+            FROM family_invites
+            WHERE family_id = ? AND accepted_at IS NULL
+            ORDER BY created_at DESC
+            """,
+            (family_id,),
+        ) as cursor:
+            return await cursor.fetchall()
+
     async def get_member(self, member_id: int, family_id: int) -> aiosqlite.Row | None:
         async with self.conn.execute(
             """

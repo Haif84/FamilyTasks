@@ -16,11 +16,21 @@ from family_tasks_bot.utils.validators import invite_row_username_for_tg_id, par
 router = Router(name="family")
 
 
+def _format_pending_invite(invite: dict) -> str:
+    raw_username = str(invite["username"])
+    if raw_username.startswith("tg:"):
+        label = f"Telegram ID {raw_username.split(':', 1)[1]}"
+    else:
+        label = raw_username if raw_username.startswith("@") else f"@{raw_username}"
+    role = "Родитель" if invite["role_type"] == "parent" else "Ребенок"
+    admin = " (админ)" if bool(invite["is_admin"]) else ""
+    return f"- {label}: {role}{admin}"
+
+
 def _member_card_text(member: dict) -> str:
-    telegram_name = f"@{member['username']}" if member["username"] else "-"
     telegram_id = member["tg_user_id"]
     return (
-        f"Участник: {member['display_name']} ({telegram_name}, Id: {telegram_id})\n"
+        f"Участник: {member['display_name']} (Id: {telegram_id})\n"
         f"Отображаемое имя: {member['display_name']}\n"
         "Выберите действие:"
     )
@@ -47,8 +57,7 @@ async def show_family_list(message: Message) -> None:
     for member in members:
         role = "Родитель" if member["role_type"] == "parent" else "Ребенок"
         admin = " (админ)" if member["is_admin"] else ""
-        username = f" @{member['username']}" if member["username"] else ""
-        lines.append(f"- {member['display_name']}{username}: {role}{admin}")
+        lines.append(f"- {member['display_name']}: {role}{admin}")
     await message.answer("\n".join(lines))
 
 
@@ -63,10 +72,15 @@ async def family_edit_open(message: Message) -> None:
         return
     members = await family_repo.list_members_for_edit(ctx.family_id)
     member_buttons = [
-        {"id": str(member["id"]), "title": f"{member['display_name']} (@{member['username'] or '-'})"}
+        {"id": str(member["id"]), "title": f"{member['display_name']}"}
         for member in members
     ]
     await message.answer("Состав семьи", reply_markup=members_edit_keyboard(member_buttons))
+    pending = await family_repo.list_pending_invites(ctx.family_id)
+    if pending:
+        lines = ["Ожидают авторизацию в боте:"]
+        lines.extend(_format_pending_invite(invite) for invite in pending)
+        await message.answer("\n".join(lines))
 
 
 @router.callback_query(F.data.startswith("member:"))
