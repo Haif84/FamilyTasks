@@ -32,10 +32,10 @@ async def _manual_done_root_keyboard(
     family_repo,
     family_id: int,
 ) -> InlineKeyboardMarkup:
-    tasks_without_room = await runtime.list_planned_tasks_without_room(family_id)
-    rooms = await family_repo.list_rooms(family_id)
+    tasks_without_group = await runtime.list_planned_tasks_without_group(family_id)
+    groups = await family_repo.list_groups(family_id)
     rows: list[list[InlineKeyboardButton]] = []
-    for task in tasks_without_room:
+    for task in tasks_without_group:
         rows.append(
             [
                 InlineKeyboardButton(
@@ -44,21 +44,21 @@ async def _manual_done_root_keyboard(
                 )
             ]
         )
-    for room in rooms:
+    for group in groups:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f'Комната "{room["name"]}"',
-                    callback_data=f"manualroom:{room['id']}",
+                    text=f'Группа "{group["name"]}"',
+                    callback_data=f"manualgroup:{group['id']}",
                 )
             ]
         )
     if not rows:
-        rows = [[InlineKeyboardButton(text="Нет доступных задач", callback_data="manualroom:none")]]
+        rows = [[InlineKeyboardButton(text="Нет доступных задач", callback_data="manualgroup:none")]]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _manual_done_room_keyboard(tasks: list[dict | object]) -> InlineKeyboardMarkup:
+def _manual_done_group_keyboard(tasks: list[dict | object]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for task in tasks:
         rows.append(
@@ -69,7 +69,7 @@ def _manual_done_room_keyboard(tasks: list[dict | object]) -> InlineKeyboardMark
                 )
             ]
         )
-    rows.append([InlineKeyboardButton(text="Назад", callback_data="manualroom:back")])
+    rows.append([InlineKeyboardButton(text="Назад", callback_data="manualgroup:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -77,33 +77,33 @@ async def send_planned_tasks_overview(message: Message, ctx: AccessContext) -> N
     db, _, family_repo = get_repositories()
     repo = PlannedTaskRepository(db)
     tasks = await repo.list_tasks(ctx.family_id)
-    rooms = await family_repo.list_rooms(ctx.family_id)
-    if not tasks and not rooms:
+    groups = await family_repo.list_groups(ctx.family_id)
+    if not tasks and not groups:
         await message.answer("Список плановых задач пуст.")
         return
 
-    tasks_without_room: list = []
-    tasks_by_room: dict[int, list] = {}
+    tasks_without_group: list = []
+    tasks_by_group: dict[int, list] = {}
     for task in tasks:
-        room_id = task["room_id"]
-        if room_id is None:
-            tasks_without_room.append(task)
+        group_id = task["group_id"]
+        if group_id is None:
+            tasks_without_group.append(task)
             continue
-        tasks_by_room.setdefault(int(room_id), []).append(task)
+        tasks_by_group.setdefault(int(group_id), []).append(task)
 
-    lines = ["Задачи без комнаты:"]
-    if tasks_without_room:
-        for task in tasks_without_room:
+    lines = ["Задачи без группы:"]
+    if tasks_without_group:
+        for task in tasks_without_group:
             lines.append(f"- {_task_caption(task)}")
     else:
         lines.append("- нет")
-    for room in rooms:
-        room_id = int(room["id"])
-        room_name = str(room["name"])
-        lines.append(f'Комната "{room_name}":')
-        room_tasks = tasks_by_room.get(room_id, [])
-        if room_tasks:
-            for task in room_tasks:
+    for group in groups:
+        group_id = int(group["id"])
+        group_name = str(group["name"])
+        lines.append(f'Группа "{group_name}":')
+        group_tasks = tasks_by_group.get(group_id, [])
+        if group_tasks:
+            for task in group_tasks:
                 lines.append(f"- {_task_caption(task)}")
         else:
             lines.append("- нет задач")
@@ -116,10 +116,10 @@ async def _planned_tasks_edit_root_keyboard(
     family_id: int,
 ) -> InlineKeyboardMarkup:
     tasks = await repo.list_tasks(family_id)
-    rooms = await family_repo.list_rooms(family_id)
+    groups = await family_repo.list_groups(family_id)
     rows: list[list[InlineKeyboardButton]] = []
     for task in tasks:
-        if task["room_id"] is None:
+        if task["group_id"] is None:
             rows.append(
                 [
                     InlineKeyboardButton(
@@ -128,12 +128,12 @@ async def _planned_tasks_edit_root_keyboard(
                     )
                 ]
             )
-    for room in rooms:
+    for group in groups:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f'Комната "{room["name"]}"',
-                    callback_data=f"roomtasks:{room['id']}",
+                    text=f'Группа "{group["name"]}"',
+                    callback_data=f"grouptasks:{group['id']}",
                 )
             ]
         )
@@ -219,8 +219,8 @@ async def add_to_execution(message: Message, state: FSMContext) -> None:
     await state.clear()
 
 
-@router.callback_query(F.data.startswith("manualroom:"))
-async def add_completed_room_callback(callback: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("manualgroup:"))
+async def add_completed_group_callback(callback: CallbackQuery) -> None:
     token = callback.data.split(":", 1)[1]
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
@@ -237,16 +237,16 @@ async def add_completed_room_callback(callback: CallbackQuery) -> None:
         await callback.answer()
         return
 
-    room_id = int(token)
-    room = await family_repo.get_room(ctx.family_id, room_id)
-    if room is None:
-        await callback.answer("Комната не найдена.", show_alert=True)
+    group_id = int(token)
+    group = await family_repo.get_group(ctx.family_id, group_id)
+    if group is None:
+        await callback.answer("Группа не найдена.", show_alert=True)
         return
-    tasks = await runtime.list_planned_tasks_by_room(ctx.family_id, room_id)
-    kb = _manual_done_room_keyboard(tasks)
-    text = f'Комната "{room["name"]}": выберите выполненную задачу.'
+    tasks = await runtime.list_planned_tasks_by_group(ctx.family_id, group_id)
+    kb = _manual_done_group_keyboard(tasks)
+    text = f'Группа "{group["name"]}": выберите выполненную задачу.'
     if not tasks:
-        text = f'Комната "{room["name"]}": активных задач нет.'
+        text = f'Группа "{group["name"]}": активных задач нет.'
     try:
         await callback.message.edit_text(text, reply_markup=kb)
     except TelegramBadRequest:
@@ -348,12 +348,12 @@ async def _build_task_editor_payload(
     deps = await repo.list_dependencies(family_id, task_id)
     is_active = bool(task["is_active"])
     state_text = "Активна" if is_active else "Неактивна"
-    room_text = str(task["room_name"] or "Без комнаты")
+    group_text = str(task["group_name"] or "Без группы")
     lines = [
         f"Задача #{task_id}: {task['title']}",
         f"Позиция в списке: {task['sort_order']}",
         f"Статус: {state_text}",
-        f"Комната: {room_text}",
+        f"Группа: {group_text}",
         "Зависимости:",
     ]
     if deps:
@@ -367,7 +367,7 @@ async def _build_task_editor_payload(
 
     dep_buttons: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text="Изменить имя", callback_data=f"editpttitle:{task_id}")],
-        [InlineKeyboardButton(text="Комната", callback_data=f"editptroom:{task_id}")],
+        [InlineKeyboardButton(text="Группа", callback_data=f"editptgroup:{task_id}")],
         [InlineKeyboardButton(text="Удалить", callback_data=f"editptdelask:{task_id}")],
         [
             InlineKeyboardButton(
@@ -521,8 +521,8 @@ async def edit_task_title_start(callback: CallbackQuery, state: FSMContext) -> N
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("editptroom:"))
-async def edit_task_room_start(callback: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("editptgroup:"))
+async def edit_task_group_start(callback: CallbackQuery) -> None:
     task_id = int(callback.data.split(":")[1])
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
@@ -534,46 +534,46 @@ async def edit_task_room_start(callback: CallbackQuery) -> None:
     if task is None:
         await callback.answer("Задача не найдена", show_alert=True)
         return
-    rooms = await family_repo.list_rooms(ctx.family_id)
+    groups = await family_repo.list_groups(ctx.family_id)
     rows: list[list[InlineKeyboardButton]] = []
-    for room in rooms:
-        marker = "✓ " if task["room_id"] is not None and int(task["room_id"]) == int(room["id"]) else ""
+    for group in groups:
+        marker = "✓ " if task["group_id"] is not None and int(task["group_id"]) == int(group["id"]) else ""
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"{marker}{room['name']}",
-                    callback_data=f"setptroom:{task_id}:{room['id']}",
+                    text=f"{marker}{group['name']}",
+                    callback_data=f"setptgroup:{task_id}:{group['id']}",
                 )
             ]
         )
-    no_room_marker = "✓ " if task["room_id"] is None else ""
-    rows.append([InlineKeyboardButton(text=f"{no_room_marker}Без комнаты", callback_data=f"setptroom:{task_id}:none")])
+    no_group_marker = "✓ " if task["group_id"] is None else ""
+    rows.append([InlineKeyboardButton(text=f"{no_group_marker}Без группы", callback_data=f"setptgroup:{task_id}:none")])
     rows.append([InlineKeyboardButton(text="Назад к задаче", callback_data=f"editpt:{task_id}")])
     try:
         await callback.message.edit_text(
-            "Выберите комнату для задачи:",
+            "Выберите группу для задачи:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         )
     except TelegramBadRequest as exc:
-        await callback.answer(f"Не удалось открыть выбор комнаты: {exc}", show_alert=True)
+        await callback.answer(f"Не удалось открыть выбор группы: {exc}", show_alert=True)
         return
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("setptroom:"))
-async def edit_task_room_set(callback: CallbackQuery) -> None:
-    _, task_id_raw, room_token = callback.data.split(":")
+@router.callback_query(F.data.startswith("setptgroup:"))
+async def edit_task_group_set(callback: CallbackQuery) -> None:
+    _, task_id_raw, group_token = callback.data.split(":")
     task_id = int(task_id_raw)
-    room_id = None if room_token == "none" else int(room_token)
+    group_id = None if group_token == "none" else int(group_token)
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if not can_edit_planned_tasks(ctx):
         await callback.answer("Нет прав", show_alert=True)
         return
     repo = PlannedTaskRepository(db)
-    updated = await repo.set_task_room(ctx.family_id, task_id, room_id)
+    updated = await repo.set_task_group(ctx.family_id, task_id, group_id)
     if not updated:
-        await callback.answer("Не удалось обновить комнату задачи", show_alert=True)
+        await callback.answer("Не удалось обновить группу задачи", show_alert=True)
         return
     refreshed, _ = await _refresh_task_editor_message(
         callback.message,
@@ -583,9 +583,9 @@ async def edit_task_room_set(callback: CallbackQuery) -> None:
         allow_send_fallback=False,
     )
     if not refreshed:
-        await callback.answer("Комната обновлена, но не удалось изменить текущее сообщение", show_alert=True)
+        await callback.answer("Группа обновлена, но не удалось изменить текущее сообщение", show_alert=True)
         return
-    await callback.answer("Комната задачи обновлена")
+    await callback.answer("Группа задачи обновлена")
 
 
 @router.callback_query(F.data.startswith("editptdelask:"))
@@ -694,9 +694,9 @@ async def planned_task_edit_title_entered(message: Message, state: FSMContext) -
     await message.answer("Название задачи обновлено.")
 
 
-@router.callback_query(F.data.startswith("roomtasks:"))
-async def planned_tasks_room_view(callback: CallbackQuery) -> None:
-    room_id = int(callback.data.split(":")[1])
+@router.callback_query(F.data.startswith("grouptasks:"))
+async def planned_tasks_group_view(callback: CallbackQuery) -> None:
+    group_id = int(callback.data.split(":")[1])
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if ctx.family_id is None:
@@ -706,7 +706,7 @@ async def planned_tasks_room_view(callback: CallbackQuery) -> None:
         await callback.answer("Нет прав", show_alert=True)
         return
     repo = PlannedTaskRepository(db)
-    if room_id == 0:
+    if group_id == 0:
         root_kb = await _planned_tasks_edit_root_keyboard(repo, family_repo, ctx.family_id)
         try:
             await callback.message.edit_text(
@@ -719,25 +719,25 @@ async def planned_tasks_room_view(callback: CallbackQuery) -> None:
         await callback.answer()
         return
 
-    room = await family_repo.get_room(ctx.family_id, room_id)
-    if room is None:
-        await callback.answer("Комната не найдена", show_alert=True)
+    group = await family_repo.get_group(ctx.family_id, group_id)
+    if group is None:
+        await callback.answer("Группа не найдена", show_alert=True)
         return
-    tasks = await repo.list_tasks_by_room(ctx.family_id, room_id)
+    tasks = await repo.list_tasks_by_group(ctx.family_id, group_id)
     task_rows = [
         [InlineKeyboardButton(text=_task_caption(task), callback_data=f"editpt:{task['id']}")]
         for task in tasks
     ]
-    task_rows.append([InlineKeyboardButton(text="Назад", callback_data="roomtasks:0")])
+    task_rows.append([InlineKeyboardButton(text="Назад", callback_data="grouptasks:0")])
     markup = InlineKeyboardMarkup(inline_keyboard=task_rows)
     if not tasks:
-        text = f"В комнате «{room['name']}» пока нет задач."
+        text = f"В группе «{group['name']}» пока нет задач."
     else:
-        text = f"Комната «{room['name']}» — выберите задачу для редактирования:"
+        text = f"Группа «{group['name']}» — выберите задачу для редактирования:"
     try:
         await callback.message.edit_text(text, reply_markup=markup)
     except TelegramBadRequest as exc:
-        await callback.answer(f"Не удалось открыть комнату: {exc}", show_alert=True)
+        await callback.answer(f"Не удалось открыть группу: {exc}", show_alert=True)
         return
     await callback.answer()
 

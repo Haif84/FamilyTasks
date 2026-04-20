@@ -10,9 +10,9 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from family_tasks_bot.deps import get_repositories
 from family_tasks_bot.db.repositories import NotificationRepository, PlannedTaskRepository, TaskRuntimeRepository
-from family_tasks_bot.keyboards.reply import main_menu, misc_menu, rooms_menu, stats_menu
+from family_tasks_bot.keyboards.reply import groups_menu, main_menu, misc_menu, stats_menu
 from family_tasks_bot.services.bootstrap import ensure_member_context
-from family_tasks_bot.states import NavStates, RoomStates, StatsStates
+from family_tasks_bot.states import GroupStates, NavStates, StatsStates
 from family_tasks_bot.version import APP_VERSION
 
 router = Router(name="misc")
@@ -78,12 +78,12 @@ def _parse_local_datetime_to_utc(value: str, timezone_name: str) -> str | None:
     return utc_dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _rooms_editor_keyboard(rooms: list) -> InlineKeyboardMarkup:
+def _groups_editor_keyboard(groups: list) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text=str(room["name"]), callback_data=f"roomedit:{room['id']}")]
-        for room in rooms
+        [InlineKeyboardButton(text=str(group["name"]), callback_data=f"groupedit:{group['id']}")]
+        for group in groups
     ]
-    rows.append([InlineKeyboardButton(text="Добавить комнату", callback_data="roomadd")])
+    rows.append([InlineKeyboardButton(text="Добавить группу", callback_data="groupadd")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -92,48 +92,48 @@ async def open_misc(message: Message) -> None:
     await message.answer("Раздел Прочее", reply_markup=misc_menu())
 
 
-@router.message(F.text == "Комнаты")
-async def open_rooms(message: Message, state: FSMContext) -> None:
+@router.message(F.text == "Группы")
+async def open_groups(message: Message, state: FSMContext) -> None:
     _, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if ctx.family_id is None:
         await message.answer("Вы пока не добавлены в семью.")
         return
-    await state.set_state(NavStates.in_rooms_menu)
-    await message.answer("Меню комнат", reply_markup=rooms_menu(is_admin=ctx.is_admin))
+    await state.set_state(NavStates.in_groups_menu)
+    await message.answer("Меню групп", reply_markup=groups_menu(is_admin=ctx.is_admin))
 
 
-@router.message(NavStates.in_rooms_menu, F.text == "Список")
-async def list_rooms(message: Message) -> None:
+@router.message(NavStates.in_groups_menu, F.text == "Список")
+async def list_groups(message: Message) -> None:
     _, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if ctx.family_id is None:
         await message.answer("Вы пока не добавлены в семью.")
         return
-    rooms = await family_repo.list_rooms(ctx.family_id)
-    if not rooms:
-        await message.answer("Комнаты пока не добавлены.")
+    groups = await family_repo.list_groups(ctx.family_id)
+    if not groups:
+        await message.answer("Группы пока не добавлены.")
         return
-    lines = ["Комнаты:"]
-    for room in rooms:
-        lines.append(f"- {room['name']}")
+    lines = ["Группы:"]
+    for group in groups:
+        lines.append(f"- {group['name']}")
     await message.answer("\n".join(lines))
 
 
-@router.message(NavStates.in_rooms_menu, F.text == "Правка комнат")
-async def edit_rooms_open(message: Message) -> None:
+@router.message(NavStates.in_groups_menu, F.text == "Правка групп")
+async def edit_groups_open(message: Message) -> None:
     _, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if ctx.family_id is None:
         await message.answer("Вы пока не добавлены в семью.")
         return
     if not ctx.is_admin:
-        await message.answer("Правка комнат доступна только администраторам.")
+        await message.answer("Правка групп доступна только администраторам.")
         return
-    rooms = await family_repo.list_rooms(ctx.family_id)
+    groups = await family_repo.list_groups(ctx.family_id)
     await message.answer(
-        "Выберите комнату для правки:",
-        reply_markup=_rooms_editor_keyboard(rooms),
+        "Выберите группу для правки:",
+        reply_markup=_groups_editor_keyboard(groups),
     )
 
 
@@ -673,99 +673,99 @@ async def stats_history_executor_waiting_hint(message: Message, state: FSMContex
     await message.answer("Выберите исполнителя кнопкой из списка ниже.")
 
 
-@router.callback_query(F.data == "roomadd")
-async def rooms_add_start(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(F.data == "groupadd")
+async def groups_add_start(callback: CallbackQuery, state: FSMContext) -> None:
     _, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if ctx.family_id is None:
         await callback.answer("Вы не состоите в семье.", show_alert=True)
         return
     if not ctx.is_admin:
-        await callback.answer("Только администратор может править комнаты.", show_alert=True)
+        await callback.answer("Только администратор может править группы.", show_alert=True)
         return
-    await state.set_state(RoomStates.waiting_room_name_create)
+    await state.set_state(GroupStates.waiting_group_name_create)
     await callback.answer()
-    await callback.message.answer("Введите название новой комнаты:")
+    await callback.message.answer("Введите название новой группы:")
 
 
-@router.callback_query(F.data.startswith("roomedit:"))
-async def rooms_edit_card(callback: CallbackQuery) -> None:
-    _, room_id_raw = callback.data.split(":")
-    room_id = int(room_id_raw)
+@router.callback_query(F.data.startswith("groupedit:"))
+async def groups_edit_card(callback: CallbackQuery) -> None:
+    _, group_id_raw = callback.data.split(":")
+    group_id = int(group_id_raw)
     _, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if ctx.family_id is None:
         await callback.answer("Вы не состоите в семье.", show_alert=True)
         return
     if not ctx.is_admin:
-        await callback.answer("Только администратор может править комнаты.", show_alert=True)
+        await callback.answer("Только администратор может править группы.", show_alert=True)
         return
-    room = await family_repo.get_room(ctx.family_id, room_id)
-    if room is None:
-        await callback.answer("Комната не найдена.", show_alert=True)
+    group = await family_repo.get_group(ctx.family_id, group_id)
+    if group is None:
+        await callback.answer("Группа не найдена.", show_alert=True)
         return
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Переименовать", callback_data=f"roomrename:{room_id}")],
-            [InlineKeyboardButton(text="Удалить", callback_data=f"roomdelete:{room_id}")],
+            [InlineKeyboardButton(text="Переименовать", callback_data=f"grouprename:{group_id}")],
+            [InlineKeyboardButton(text="Удалить", callback_data=f"groupdelete:{group_id}")],
         ]
     )
     await callback.answer()
-    await callback.message.answer(f"Комната: {room['name']}", reply_markup=kb)
+    await callback.message.answer(f"Группа: {group['name']}", reply_markup=kb)
 
 
-@router.callback_query(F.data.startswith("roomrename:"))
-async def rooms_rename_start(callback: CallbackQuery, state: FSMContext) -> None:
-    _, room_id_raw = callback.data.split(":")
-    room_id = int(room_id_raw)
+@router.callback_query(F.data.startswith("grouprename:"))
+async def groups_rename_start(callback: CallbackQuery, state: FSMContext) -> None:
+    _, group_id_raw = callback.data.split(":")
+    group_id = int(group_id_raw)
     _, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if ctx.family_id is None:
         await callback.answer("Вы не состоите в семье.", show_alert=True)
         return
     if not ctx.is_admin:
-        await callback.answer("Только администратор может править комнаты.", show_alert=True)
+        await callback.answer("Только администратор может править группы.", show_alert=True)
         return
-    room = await family_repo.get_room(ctx.family_id, room_id)
-    if room is None:
-        await callback.answer("Комната не найдена.", show_alert=True)
+    group = await family_repo.get_group(ctx.family_id, group_id)
+    if group is None:
+        await callback.answer("Группа не найдена.", show_alert=True)
         return
-    await state.set_state(RoomStates.waiting_room_name_rename)
-    await state.update_data(room_id=room_id)
+    await state.set_state(GroupStates.waiting_group_name_rename)
+    await state.update_data(group_id=group_id)
     await callback.answer()
-    await callback.message.answer(f"Текущее имя: {room['name']}\nВведите новое название комнаты:")
+    await callback.message.answer(f"Текущее имя: {group['name']}\nВведите новое название группы:")
 
 
-@router.callback_query(F.data.startswith("roomdelete:"))
-async def rooms_delete(callback: CallbackQuery) -> None:
-    _, room_id_raw = callback.data.split(":")
-    room_id = int(room_id_raw)
+@router.callback_query(F.data.startswith("groupdelete:"))
+async def groups_delete(callback: CallbackQuery) -> None:
+    _, group_id_raw = callback.data.split(":")
+    group_id = int(group_id_raw)
     _, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if ctx.family_id is None:
         await callback.answer("Вы не состоите в семье.", show_alert=True)
         return
     if not ctx.is_admin:
-        await callback.answer("Только администратор может править комнаты.", show_alert=True)
+        await callback.answer("Только администратор может править группы.", show_alert=True)
         return
-    deleted = await family_repo.delete_room(ctx.family_id, room_id)
+    deleted = await family_repo.delete_group(ctx.family_id, group_id)
     if not deleted:
-        await callback.answer("Комната не найдена.", show_alert=True)
+        await callback.answer("Группа не найдена.", show_alert=True)
         return
-    rooms = await family_repo.list_rooms(ctx.family_id)
-    await callback.message.answer("Комната удалена. Привязанные задачи переведены в «Без комнаты».")
+    groups = await family_repo.list_groups(ctx.family_id)
+    await callback.message.answer("Группа удалена. Привязанные задачи переведены в «Без группы».")
     await callback.message.answer(
-        "Выберите комнату для правки:",
-        reply_markup=_rooms_editor_keyboard(rooms),
+        "Выберите группу для правки:",
+        reply_markup=_groups_editor_keyboard(groups),
     )
     await callback.answer()
 
 
-@router.message(RoomStates.waiting_room_name_create)
-async def rooms_create_name_entered(message: Message, state: FSMContext) -> None:
+@router.message(GroupStates.waiting_group_name_create)
+async def groups_create_name_entered(message: Message, state: FSMContext) -> None:
     name = (message.text or "").strip()
     if len(name) < 2:
-        await message.answer("Название комнаты слишком короткое.")
+        await message.answer("Название группы слишком короткое.")
         return
     _, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
@@ -775,26 +775,26 @@ async def rooms_create_name_entered(message: Message, state: FSMContext) -> None
         return
     if not ctx.is_admin:
         await state.clear()
-        await message.answer("Только администратор может править комнаты.")
+        await message.answer("Только администратор может править группы.")
         return
-    room_id = await family_repo.create_room(ctx.family_id, name)
-    if room_id is None:
-        await message.answer("Комната с таким названием уже существует или имя пустое.")
+    group_id = await family_repo.create_group(ctx.family_id, name)
+    if group_id is None:
+        await message.answer("Группа с таким названием уже существует или имя пустое.")
         return
-    await state.set_state(NavStates.in_rooms_menu)
-    rooms = await family_repo.list_rooms(ctx.family_id)
-    await message.answer(f"Комната «{name}» создана.")
-    await message.answer("Выберите комнату для правки:", reply_markup=_rooms_editor_keyboard(rooms))
+    await state.set_state(NavStates.in_groups_menu)
+    groups = await family_repo.list_groups(ctx.family_id)
+    await message.answer(f"Группа «{name}» создана.")
+    await message.answer("Выберите группу для правки:", reply_markup=_groups_editor_keyboard(groups))
 
 
-@router.message(RoomStates.waiting_room_name_rename)
-async def rooms_rename_name_entered(message: Message, state: FSMContext) -> None:
+@router.message(GroupStates.waiting_group_name_rename)
+async def groups_rename_name_entered(message: Message, state: FSMContext) -> None:
     name = (message.text or "").strip()
     if len(name) < 2:
-        await message.answer("Название комнаты слишком короткое.")
+        await message.answer("Название группы слишком короткое.")
         return
     data = await state.get_data()
-    room_id = int(data.get("room_id", 0))
+    group_id = int(data.get("group_id", 0))
     _, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if ctx.family_id is None:
@@ -803,16 +803,16 @@ async def rooms_rename_name_entered(message: Message, state: FSMContext) -> None
         return
     if not ctx.is_admin:
         await state.clear()
-        await message.answer("Только администратор может править комнаты.")
+        await message.answer("Только администратор может править группы.")
         return
-    renamed = await family_repo.rename_room(ctx.family_id, room_id, name)
+    renamed = await family_repo.rename_group(ctx.family_id, group_id, name)
     if not renamed:
-        await message.answer("Не удалось переименовать комнату. Проверьте, что имя уникально.")
+        await message.answer("Не удалось переименовать группу. Проверьте, что имя уникально.")
         return
-    await state.set_state(NavStates.in_rooms_menu)
-    rooms = await family_repo.list_rooms(ctx.family_id)
-    await message.answer(f"Комната переименована в «{name}».")
-    await message.answer("Выберите комнату для правки:", reply_markup=_rooms_editor_keyboard(rooms))
+    await state.set_state(NavStates.in_groups_menu)
+    groups = await family_repo.list_groups(ctx.family_id)
+    await message.answer(f"Группа переименована в «{name}».")
+    await message.answer("Выберите группу для правки:", reply_markup=_groups_editor_keyboard(groups))
 
 
 @router.message(F.text == "Назад")

@@ -222,11 +222,11 @@ class FamilyRepository:
         ) as cursor:
             return await cursor.fetchall()
 
-    async def list_rooms(self, family_id: int) -> list[aiosqlite.Row]:
+    async def list_groups(self, family_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
             SELECT id, family_id, name, created_at, updated_at
-            FROM rooms
+            FROM groups
             WHERE family_id = ?
             ORDER BY name, id
             """,
@@ -234,23 +234,23 @@ class FamilyRepository:
         ) as cursor:
             return await cursor.fetchall()
 
-    async def get_room(self, family_id: int, room_id: int) -> aiosqlite.Row | None:
+    async def get_group(self, family_id: int, group_id: int) -> aiosqlite.Row | None:
         async with self.conn.execute(
             """
             SELECT id, family_id, name, created_at, updated_at
-            FROM rooms
+            FROM groups
             WHERE family_id = ? AND id = ?
             """,
-            (family_id, room_id),
+            (family_id, group_id),
         ) as cursor:
             return await cursor.fetchone()
 
-    async def create_room(self, family_id: int, name: str) -> int | None:
+    async def create_group(self, family_id: int, name: str) -> int | None:
         normalized = name.strip()
         if not normalized:
             return None
         async with self.conn.execute(
-            "SELECT 1 FROM rooms WHERE family_id = ? AND lower(name) = lower(?) LIMIT 1",
+            "SELECT 1 FROM groups WHERE family_id = ? AND lower(name) = lower(?) LIMIT 1",
             (family_id, normalized),
         ) as cursor:
             duplicate = await cursor.fetchone()
@@ -258,7 +258,7 @@ class FamilyRepository:
             return None
         cur = await self.conn.execute(
             """
-            INSERT INTO rooms (family_id, name)
+            INSERT INTO groups (family_id, name)
             VALUES (?, ?)
             """,
             (family_id, normalized),
@@ -266,53 +266,53 @@ class FamilyRepository:
         await self.conn.commit()
         return int(cur.lastrowid)
 
-    async def rename_room(self, family_id: int, room_id: int, new_name: str) -> bool:
+    async def rename_group(self, family_id: int, group_id: int, new_name: str) -> bool:
         normalized = new_name.strip()
         if not normalized:
             return False
         async with self.conn.execute(
-            "SELECT 1 FROM rooms WHERE family_id = ? AND id = ? LIMIT 1",
-            (family_id, room_id),
+            "SELECT 1 FROM groups WHERE family_id = ? AND id = ? LIMIT 1",
+            (family_id, group_id),
         ) as cursor:
             target_exists = await cursor.fetchone()
         if target_exists is None:
             return False
         async with self.conn.execute(
-            "SELECT 1 FROM rooms WHERE family_id = ? AND id != ? AND lower(name) = lower(?) LIMIT 1",
-            (family_id, room_id, normalized),
+            "SELECT 1 FROM groups WHERE family_id = ? AND id != ? AND lower(name) = lower(?) LIMIT 1",
+            (family_id, group_id, normalized),
         ) as cursor:
             duplicate = await cursor.fetchone()
         if duplicate is not None:
             return False
         cur = await self.conn.execute(
             """
-            UPDATE rooms
+            UPDATE groups
             SET name = ?, updated_at = CURRENT_TIMESTAMP
             WHERE family_id = ? AND id = ?
             """,
-            (normalized, family_id, room_id),
+            (normalized, family_id, group_id),
         )
         await self.conn.commit()
         return (cur.rowcount or 0) > 0
 
-    async def delete_room(self, family_id: int, room_id: int) -> bool:
+    async def delete_group(self, family_id: int, group_id: int) -> bool:
         await self.conn.execute("BEGIN IMMEDIATE")
         try:
             async with self.conn.execute(
-                "SELECT 1 FROM rooms WHERE family_id = ? AND id = ? LIMIT 1",
-                (family_id, room_id),
+                "SELECT 1 FROM groups WHERE family_id = ? AND id = ? LIMIT 1",
+                (family_id, group_id),
             ) as cursor:
-                room = await cursor.fetchone()
-            if room is None:
+                group = await cursor.fetchone()
+            if group is None:
                 await self.conn.rollback()
                 return False
             await self.conn.execute(
-                "UPDATE planned_tasks SET room_id = NULL WHERE family_id = ? AND room_id = ?",
-                (family_id, room_id),
+                "UPDATE planned_tasks SET group_id = NULL WHERE family_id = ? AND group_id = ?",
+                (family_id, group_id),
             )
             await self.conn.execute(
-                "DELETE FROM rooms WHERE family_id = ? AND id = ?",
-                (family_id, room_id),
+                "DELETE FROM groups WHERE family_id = ? AND id = ?",
+                (family_id, group_id),
             )
             await self.conn.commit()
             return True
@@ -400,9 +400,9 @@ class PlannedTaskRepository:
     async def list_tasks(self, family_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
-            SELECT pt.id, pt.title, pt.is_active, pt.sort_order, pt.room_id, r.name AS room_name
+            SELECT pt.id, pt.title, pt.is_active, pt.sort_order, pt.group_id, g.name AS group_name
             FROM planned_tasks pt
-            LEFT JOIN rooms r ON r.id = pt.room_id AND r.family_id = pt.family_id
+            LEFT JOIN groups g ON g.id = pt.group_id AND g.family_id = pt.family_id
             WHERE pt.family_id = ?
             ORDER BY pt.sort_order, pt.title, pt.id
             """,
@@ -413,34 +413,34 @@ class PlannedTaskRepository:
     async def get_task(self, family_id: int, task_id: int) -> aiosqlite.Row | None:
         async with self.conn.execute(
             """
-            SELECT pt.id, pt.title, pt.sort_order, pt.is_active, pt.room_id, r.name AS room_name
+            SELECT pt.id, pt.title, pt.sort_order, pt.is_active, pt.group_id, g.name AS group_name
             FROM planned_tasks pt
-            LEFT JOIN rooms r ON r.id = pt.room_id AND r.family_id = pt.family_id
+            LEFT JOIN groups g ON g.id = pt.group_id AND g.family_id = pt.family_id
             WHERE pt.family_id = ? AND pt.id = ?
             """,
             (family_id, task_id),
         ) as cursor:
             return await cursor.fetchone()
 
-    async def list_tasks_by_room(self, family_id: int, room_id: int) -> list[aiosqlite.Row]:
+    async def list_tasks_by_group(self, family_id: int, group_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
-            SELECT pt.id, pt.title, pt.is_active, pt.sort_order, pt.room_id, r.name AS room_name
+            SELECT pt.id, pt.title, pt.is_active, pt.sort_order, pt.group_id, g.name AS group_name
             FROM planned_tasks pt
-            JOIN rooms r ON r.id = pt.room_id AND r.family_id = pt.family_id
-            WHERE pt.family_id = ? AND pt.room_id = ?
+            JOIN groups g ON g.id = pt.group_id AND g.family_id = pt.family_id
+            WHERE pt.family_id = ? AND pt.group_id = ?
             ORDER BY pt.sort_order, pt.title, pt.id
             """,
-            (family_id, room_id),
+            (family_id, group_id),
         ) as cursor:
             return await cursor.fetchall()
 
-    async def list_tasks_without_room(self, family_id: int) -> list[aiosqlite.Row]:
+    async def list_tasks_without_group(self, family_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
-            SELECT id, title, is_active, sort_order, room_id
+            SELECT id, title, is_active, sort_order, group_id
             FROM planned_tasks
-            WHERE family_id = ? AND room_id IS NULL
+            WHERE family_id = ? AND group_id IS NULL
             ORDER BY sort_order, title, id
             """,
             (family_id,),
@@ -472,22 +472,22 @@ class PlannedTaskRepository:
         await self.conn.commit()
         return (cur.rowcount or 0) > 0
 
-    async def set_task_room(self, family_id: int, task_id: int, room_id: int | None) -> bool:
-        if room_id is not None:
+    async def set_task_group(self, family_id: int, task_id: int, group_id: int | None) -> bool:
+        if group_id is not None:
             async with self.conn.execute(
-                "SELECT 1 FROM rooms WHERE id = ? AND family_id = ? LIMIT 1",
-                (room_id, family_id),
+                "SELECT 1 FROM groups WHERE id = ? AND family_id = ? LIMIT 1",
+                (group_id, family_id),
             ) as cursor:
-                room = await cursor.fetchone()
-            if room is None:
+                group = await cursor.fetchone()
+            if group is None:
                 return False
         cur = await self.conn.execute(
             """
             UPDATE planned_tasks
-            SET room_id = ?, updated_at = CURRENT_TIMESTAMP
+            SET group_id = ?, updated_at = CURRENT_TIMESTAMP
             WHERE family_id = ? AND id = ?
             """,
-            (room_id, family_id, task_id),
+            (group_id, family_id, task_id),
         )
         await self.conn.commit()
         return (cur.rowcount or 0) > 0
@@ -737,27 +737,27 @@ class TaskRuntimeRepository:
         ) as cursor:
             return await cursor.fetchall()
 
-    async def list_planned_tasks_without_room(self, family_id: int) -> list[aiosqlite.Row]:
+    async def list_planned_tasks_without_group(self, family_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
             SELECT id, title
             FROM planned_tasks
-            WHERE family_id = ? AND is_active = 1 AND room_id IS NULL
+            WHERE family_id = ? AND is_active = 1 AND group_id IS NULL
             ORDER BY sort_order, title, id
             """,
             (family_id,),
         ) as cursor:
             return await cursor.fetchall()
 
-    async def list_planned_tasks_by_room(self, family_id: int, room_id: int) -> list[aiosqlite.Row]:
+    async def list_planned_tasks_by_group(self, family_id: int, group_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
             SELECT id, title
             FROM planned_tasks
-            WHERE family_id = ? AND is_active = 1 AND room_id = ?
+            WHERE family_id = ? AND is_active = 1 AND group_id = ?
             ORDER BY sort_order, title, id
             """,
-            (family_id, room_id),
+            (family_id, group_id),
         ) as cursor:
             return await cursor.fetchall()
 

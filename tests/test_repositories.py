@@ -190,25 +190,25 @@ async def test_planned_task_delete_when_no_history() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_tasks_grouped_by_room_for_manual_completion() -> None:
+async def test_runtime_tasks_grouped_by_group_for_manual_completion() -> None:
     conn = await _init_db()
-    await conn.execute("INSERT INTO rooms (id, family_id, name) VALUES (1, 1, 'Kitchen')")
-    await conn.execute("INSERT INTO rooms (id, family_id, name) VALUES (2, 1, 'Hall')")
+    await conn.execute("INSERT INTO groups (id, family_id, name) VALUES (1, 1, 'Kitchen')")
+    await conn.execute("INSERT INTO groups (id, family_id, name) VALUES (2, 1, 'Hall')")
     await conn.commit()
 
     planned = PlannedTaskRepository(conn)
     runtime = TaskRuntimeRepository(conn)
-    t1 = await planned.create_task(1, "No room task", 1)
+    t1 = await planned.create_task(1, "No group task", 1)
     t2 = await planned.create_task(1, "Kitchen task", 1)
     t3 = await planned.create_task(1, "Hall task", 1)
-    await planned.set_task_room(1, t2, 1)
-    await planned.set_task_room(1, t3, 2)
+    await planned.set_task_group(1, t2, 1)
+    await planned.set_task_group(1, t3, 2)
 
-    without_room = await runtime.list_planned_tasks_without_room(1)
-    kitchen = await runtime.list_planned_tasks_by_room(1, 1)
-    hall = await runtime.list_planned_tasks_by_room(1, 2)
+    without_group = await runtime.list_planned_tasks_without_group(1)
+    kitchen = await runtime.list_planned_tasks_by_group(1, 1)
+    hall = await runtime.list_planned_tasks_by_group(1, 2)
 
-    assert {int(row["id"]) for row in without_room} == {t1}
+    assert {int(row["id"]) for row in without_group} == {t1}
     assert {int(row["id"]) for row in kitchen} == {t2}
     assert {int(row["id"]) for row in hall} == {t3}
     await conn.close()

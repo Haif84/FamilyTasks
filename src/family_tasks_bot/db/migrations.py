@@ -34,6 +34,7 @@ async def run_migrations(conn: aiosqlite.Connection) -> None:
         )
     await _migrate_planned_tasks_sort_order(conn)
     await _migrate_rooms_and_task_room(conn)
+    await _migrate_groups_and_task_group(conn)
     await _migrate_task_completions_history_fields(conn)
     await conn.commit()
 
@@ -144,6 +145,70 @@ async def _migrate_task_completions_history_fields(conn: aiosqlite.Connection) -
         UPDATE task_completions
         SET history_updated_at = COALESCE(NULLIF(history_updated_at, ''), CURRENT_TIMESTAMP)
         """
+    )
+    await conn.execute("INSERT INTO schema_migrations (id) VALUES (?)", (migration_id,))
+
+
+async def _migrate_groups_and_task_group(conn: aiosqlite.Connection) -> None:
+    migration_id = "006_groups_and_planned_task_group"
+    async with conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ? LIMIT 1",
+        (migration_id,),
+    ) as cursor:
+        exists = await cursor.fetchone()
+    if exists is not None:
+        return
+
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            family_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (family_id, name),
+            FOREIGN KEY (family_id) REFERENCES families(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    async with conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'rooms' LIMIT 1"
+    ) as cursor:
+        has_rooms_table = await cursor.fetchone() is not None
+    if has_rooms_table:
+        await conn.execute(
+            """
+            INSERT OR IGNORE INTO groups (id, family_id, name, created_at, updated_at)
+            SELECT id, family_id, name, created_at, updated_at
+            FROM rooms
+            """
+        )
+
+    async with conn.execute("PRAGMA table_info(planned_tasks)") as cursor:
+        columns = await cursor.fetchall()
+    col_names = {str(col["name"]) for col in columns}
+    has_group_id = "group_id" in col_names
+    if not has_group_id:
+        await conn.execute("ALTER TABLE planned_tasks ADD COLUMN group_id INTEGER")
+
+    has_room_id = "room_id" in col_names
+    if has_room_id:
+        await conn.execute(
+            """
+            UPDATE planned_tasks
+            SET group_id = room_id
+            WHERE group_id IS NULL AND room_id IS NOT NULL
+            """
+        )
+
+    await conn.execute("DROP INDEX IF EXISTS idx_planned_tasks_family_room_sort")
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_groups_family_name ON groups(family_id, name)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_planned_tasks_family_group_sort ON planned_tasks(family_id, group_id, sort_order)"
     )
     await conn.execute("INSERT INTO schema_migrations (id) VALUES (?)", (migration_id,))
 
