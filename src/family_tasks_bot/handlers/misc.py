@@ -89,7 +89,9 @@ def _groups_editor_keyboard(groups: list) -> InlineKeyboardMarkup:
 
 @router.message(F.text == "Прочее")
 async def open_misc(message: Message) -> None:
-    await message.answer("Раздел Прочее", reply_markup=misc_menu())
+    _, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+    await message.answer("Раздел Прочее", reply_markup=misc_menu(is_admin=ctx.is_admin))
 
 
 @router.message(F.text == "Группы")

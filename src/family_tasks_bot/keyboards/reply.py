@@ -28,16 +28,16 @@ def back_menu() -> ReplyKeyboardMarkup:
     )
 
 
-def misc_menu() -> ReplyKeyboardMarkup:
-    rows = _rows_of_two(
-        [
-            "Состав семьи",
-            "Плановые задачи",
-            "Группы",
-            "О боте",
-            "Назад",
-        ]
-    )
+def misc_menu(is_admin: bool) -> ReplyKeyboardMarkup:
+    labels = [
+        "Состав семьи",
+        "Плановые задачи",
+        "Группы",
+    ]
+    if is_admin:
+        labels.append("Добавить выполненную (за ...)")
+    labels.extend(["О боте", "Назад"])
+    rows = _rows_of_two(labels)
     return ReplyKeyboardMarkup(
         keyboard=rows,
         resize_keyboard=True,

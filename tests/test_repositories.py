@@ -235,3 +235,42 @@ async def test_group_sort_order_create_and_move() -> None:
     groups_after_down = await family.list_groups(1)
     assert [int(row["id"]) for row in groups_after_down] == [g3, g1, g2]
     await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_task_requires_comment_toggle_and_manual_comment_saved() -> None:
+    conn = await _init_db()
+    planned = PlannedTaskRepository(conn)
+    runtime = TaskRuntimeRepository(conn)
+    task_id = await planned.create_task(1, "Commented task", 1)
+
+    toggled = await planned.set_task_requires_comment(1, task_id, True)
+    assert toggled is True
+    task = await planned.get_task(1, task_id)
+    assert task is not None
+    assert int(task["requires_comment"]) == 1
+
+    completion_id = await runtime.add_manual_completion(
+        1,
+        task_id,
+        2,
+        comment_text="Done with details",
+        actor_user_id=1,
+    )
+    async with conn.execute(
+        "SELECT completed_by, comment_text FROM task_completions WHERE id = ?",
+        (completion_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    assert row is not None
+    assert int(row["completed_by"]) == 2
+    assert str(row["comment_text"]) == "Done with details"
+
+    async with conn.execute(
+        "SELECT user_id FROM undo_log WHERE action_ref_id = ? AND action_type = 'completion'",
+        (completion_id,),
+    ) as cursor:
+        undo_row = await cursor.fetchone()
+    assert undo_row is not None
+    assert int(undo_row["user_id"]) == 1
+    await conn.close()

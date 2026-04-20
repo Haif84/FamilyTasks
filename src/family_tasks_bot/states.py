@@ -19,6 +19,7 @@ class PlannedTaskStates(StatesGroup):
 class RuntimeTaskStates(StatesGroup):
     waiting_execution_time = State()
     waiting_custom_delay = State()
+    waiting_manual_comment = State()
 
 
 class GroupStates(StatesGroup):

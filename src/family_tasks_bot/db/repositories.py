@@ -459,7 +459,7 @@ class PlannedTaskRepository:
     async def list_tasks(self, family_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
-            SELECT pt.id, pt.title, pt.is_active, pt.sort_order, pt.group_id, g.name AS group_name
+            SELECT pt.id, pt.title, pt.is_active, pt.sort_order, pt.group_id, pt.requires_comment, g.name AS group_name
             FROM planned_tasks pt
             LEFT JOIN groups g ON g.id = pt.group_id AND g.family_id = pt.family_id
             WHERE pt.family_id = ?
@@ -472,7 +472,7 @@ class PlannedTaskRepository:
     async def get_task(self, family_id: int, task_id: int) -> aiosqlite.Row | None:
         async with self.conn.execute(
             """
-            SELECT pt.id, pt.title, pt.sort_order, pt.is_active, pt.group_id, g.name AS group_name
+            SELECT pt.id, pt.title, pt.sort_order, pt.is_active, pt.group_id, pt.requires_comment, g.name AS group_name
             FROM planned_tasks pt
             LEFT JOIN groups g ON g.id = pt.group_id AND g.family_id = pt.family_id
             WHERE pt.family_id = ? AND pt.id = ?
@@ -484,7 +484,7 @@ class PlannedTaskRepository:
     async def list_tasks_by_group(self, family_id: int, group_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
-            SELECT pt.id, pt.title, pt.is_active, pt.sort_order, pt.group_id, g.name AS group_name
+            SELECT pt.id, pt.title, pt.is_active, pt.sort_order, pt.group_id, pt.requires_comment, g.name AS group_name
             FROM planned_tasks pt
             JOIN groups g ON g.id = pt.group_id AND g.family_id = pt.family_id
             WHERE pt.family_id = ? AND pt.group_id = ?
@@ -497,7 +497,7 @@ class PlannedTaskRepository:
     async def list_tasks_without_group(self, family_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
-            SELECT id, title, is_active, sort_order, group_id
+            SELECT id, title, is_active, sort_order, group_id, requires_comment
             FROM planned_tasks
             WHERE family_id = ? AND group_id IS NULL
             ORDER BY sort_order, title, id
@@ -559,6 +559,18 @@ class PlannedTaskRepository:
             WHERE family_id = ? AND id = ?
             """,
             (int(is_active), family_id, task_id),
+        )
+        await self.conn.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def set_task_requires_comment(self, family_id: int, task_id: int, requires_comment: bool) -> bool:
+        cur = await self.conn.execute(
+            """
+            UPDATE planned_tasks
+            SET requires_comment = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE family_id = ? AND id = ?
+            """,
+            (int(requires_comment), family_id, task_id),
         )
         await self.conn.commit()
         return (cur.rowcount or 0) > 0
@@ -899,7 +911,15 @@ class TaskRuntimeRepository:
         await self.conn.commit()
         return row
 
-    async def add_manual_completion(self, family_id: int, planned_task_id: int, user_id: int) -> int:
+    async def add_manual_completion(
+        self,
+        family_id: int,
+        planned_task_id: int,
+        completed_by_user_id: int,
+        *,
+        comment_text: str | None = None,
+        actor_user_id: int | None = None,
+    ) -> int:
         cur = await self.conn.execute(
             """
             INSERT INTO task_completions (
@@ -908,21 +928,23 @@ class TaskRuntimeRepository:
                 planned_task_id,
                 completed_by,
                 completed_at,
+                comment_text,
                 added_at,
                 history_updated_at,
                 completion_mode
             )
-            VALUES (NULL, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'manual')
+            VALUES (NULL, ?, ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'manual')
             """,
-            (family_id, planned_task_id, user_id),
+            (family_id, planned_task_id, completed_by_user_id, comment_text),
         )
         completion_id = int(cur.lastrowid)
+        undo_actor_user_id = actor_user_id if actor_user_id is not None else completed_by_user_id
         await self.conn.execute(
             """
             INSERT INTO undo_log (family_id, user_id, action_type, action_ref_id, payload_json)
             VALUES (?, ?, 'completion', ?, ?)
             """,
-            (family_id, user_id, completion_id, json.dumps({"instance_id": None})),
+            (family_id, undo_actor_user_id, completion_id, json.dumps({"instance_id": None})),
         )
         await self.conn.commit()
         return completion_id

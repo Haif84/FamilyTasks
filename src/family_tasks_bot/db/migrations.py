@@ -37,6 +37,7 @@ async def run_migrations(conn: aiosqlite.Connection) -> None:
     await _migrate_groups_and_task_group(conn)
     await _migrate_groups_sort_order(conn)
     await _migrate_task_completions_history_fields(conn)
+    await _migrate_task_comment_fields(conn)
     await conn.commit()
 
 
@@ -263,6 +264,31 @@ async def _migrate_groups_sort_order(conn: aiosqlite.Connection) -> None:
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_groups_family_sort_order ON groups(family_id, sort_order)"
     )
+    await conn.execute("INSERT INTO schema_migrations (id) VALUES (?)", (migration_id,))
+
+
+async def _migrate_task_comment_fields(conn: aiosqlite.Connection) -> None:
+    migration_id = "008_task_comment_fields"
+    async with conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ? LIMIT 1",
+        (migration_id,),
+    ) as cursor:
+        exists = await cursor.fetchone()
+    if exists is not None:
+        return
+
+    async with conn.execute("PRAGMA table_info(planned_tasks)") as cursor:
+        planned_task_columns = await cursor.fetchall()
+    planned_task_col_names = {str(col["name"]) for col in planned_task_columns}
+    if "requires_comment" not in planned_task_col_names:
+        await conn.execute("ALTER TABLE planned_tasks ADD COLUMN requires_comment INTEGER NOT NULL DEFAULT 0")
+
+    async with conn.execute("PRAGMA table_info(task_completions)") as cursor:
+        completion_columns = await cursor.fetchall()
+    completion_col_names = {str(col["name"]) for col in completion_columns}
+    if "comment_text" not in completion_col_names:
+        await conn.execute("ALTER TABLE task_completions ADD COLUMN comment_text TEXT")
+
     await conn.execute("INSERT INTO schema_migrations (id) VALUES (?)", (migration_id,))
 
 
