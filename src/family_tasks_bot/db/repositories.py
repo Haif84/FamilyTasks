@@ -1202,8 +1202,13 @@ class TaskRuntimeRepository:
     ) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
-            SELECT tc.completed_at
+            SELECT
+                tc.completed_at,
+                u.display_name AS member_display_name,
+                COALESCE(pt.effort_stars, 1) AS effort_stars
             FROM task_completions tc
+            JOIN users u ON u.id = tc.completed_by
+            JOIN planned_tasks pt ON pt.id = tc.planned_task_id
             WHERE tc.family_id = ? AND tc.completed_by = ?
             ORDER BY tc.completed_at DESC, tc.id DESC
             LIMIT ? OFFSET ?

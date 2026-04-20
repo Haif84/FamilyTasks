@@ -23,8 +23,10 @@ router = Router(name="tasks")
 
 
 def _task_caption(task: dict | object) -> str:
+    effort_stars = int(task["effort_stars"]) if task["effort_stars"] is not None else 1
+    stars = _stars_text(effort_stars)
     suffix = " (неактивна)" if not bool(task["is_active"]) else ""
-    return f"{task['sort_order']}. {task['title']}{suffix}"
+    return f"{task['sort_order']}. {task['title']} [{stars}]{suffix}"
 
 
 def _family_tzinfo(timezone_name: str) -> ZoneInfo | timezone:

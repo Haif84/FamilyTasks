@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardMarkup
 
@@ -216,16 +217,10 @@ async def stats_by_task_menu(message: Message) -> None:
         await message.answer("Вы пока не добавлены в семью.")
         return
     repo = PlannedTaskRepository(db)
-    tasks = await repo.list_tasks(ctx.family_id)
-    buttons = [
-        [InlineKeyboardButton(text=str(task["title"]), callback_data=f"statst:{task['id']}:0")]
-        for task in tasks
-    ]
+    root_text, root_kb = await _build_stats_task_root_picker(repo, family_repo, ctx.family_id)
     await message.answer(
-        "Выберите задачу:",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=buttons or [[InlineKeyboardButton(text="Нет задач", callback_data="noop")]]
-        ),
+        root_text,
+        reply_markup=root_kb,
     )
 
 
@@ -300,7 +295,7 @@ async def _render_member_actions(
     if entries:
         for row in entries:
             local_completed_at = _to_family_local_timestamp(str(row["completed_at"]), timezone_name)
-            lines.append(f"- {local_completed_at}")
+            lines.append(f"- {local_completed_at} - {row['member_display_name']} - {int(row['effort_stars'])}★")
     else:
         lines.append("Действий пока нет.")
     nav: list[InlineKeyboardButton] = []
@@ -341,6 +336,29 @@ async def _render_task_actions(
     await callback.message.edit_text("\n".join(lines), reply_markup=kb if nav else None)
 
 
+async def _build_stats_task_root_picker(
+    repo: PlannedTaskRepository,
+    family_repo,
+    family_id: int,
+) -> tuple[str, InlineKeyboardMarkup]:
+    tasks = await repo.list_tasks(family_id)
+    groups = await family_repo.list_groups(family_id)
+    tasks_without_group = [task for task in tasks if task["group_id"] is None]
+    rows: list[list[InlineKeyboardButton]] = []
+    for task in tasks_without_group:
+        rows.append([InlineKeyboardButton(text=str(task["title"]), callback_data=f"statst:{task['id']}:0")])
+    for group in groups:
+        group_id = int(group["id"])
+        has_tasks = any(task["group_id"] is not None and int(task["group_id"]) == group_id for task in tasks)
+        if not has_tasks:
+            continue
+        rows.append([InlineKeyboardButton(text=f'Группа "{group["name"]}"', callback_data=f"statstgrp:{group_id}")])
+    if not rows:
+        rows = [[InlineKeyboardButton(text="Нет задач", callback_data="noop")]]
+    rows.append([InlineKeyboardButton(text="Отмена", callback_data="statstcancel")])
+    return ("Выберите задачу:", InlineKeyboardMarkup(inline_keyboard=rows))
+
+
 @router.callback_query(F.data.startswith("statsm:"))
 async def stats_member_callback(callback: CallbackQuery) -> None:
     _, user_id_raw, offset_raw = callback.data.split(":")
@@ -370,6 +388,69 @@ async def stats_task_callback(callback: CallbackQuery) -> None:
     runtime = TaskRuntimeRepository(db)
     timezone_name = ctx.family_timezone or "UTC"
     await _render_task_actions(callback, ctx.family_id, task_id, offset, runtime, timezone_name)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "statstroot")
+async def stats_task_root_callback(callback: CallbackQuery) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    repo = PlannedTaskRepository(db)
+    root_text, root_kb = await _build_stats_task_root_picker(repo, family_repo, ctx.family_id)
+    try:
+        await callback.message.edit_text(root_text, reply_markup=root_kb)
+    except TelegramBadRequest:
+        await callback.message.answer(root_text, reply_markup=root_kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("statstgrp:"))
+async def stats_task_group_callback(callback: CallbackQuery) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    group_id = int(callback.data.split(":")[1])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    repo = PlannedTaskRepository(db)
+    group = await family_repo.get_group(ctx.family_id, group_id)
+    if group is None:
+        await callback.answer("Группа не найдена.", show_alert=True)
+        return
+    tasks = await repo.list_tasks_by_group(ctx.family_id, group_id)
+    rows: list[list[InlineKeyboardButton]] = []
+    for task in tasks:
+        rows.append([InlineKeyboardButton(text=str(task["title"]), callback_data=f"statst:{task['id']}:0")])
+    if not rows:
+        rows = [[InlineKeyboardButton(text="Нет задач в группе", callback_data="noop")]]
+    rows.append([InlineKeyboardButton(text="Назад", callback_data="statstroot")])
+    rows.append([InlineKeyboardButton(text="Отмена", callback_data="statstcancel")])
+    text = f'Группа "{group["name"]}": выберите задачу.'
+    try:
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "statstcancel")
+async def stats_task_cancel_callback(callback: CallbackQuery) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    try:
+        await callback.message.edit_text("Операция отменена.")
+    except TelegramBadRequest:
+        await callback.message.answer("Операция отменена.")
     await callback.answer()
 
 
