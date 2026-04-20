@@ -324,11 +324,15 @@ async def _maybe_request_manual_comment(
 async def send_planned_tasks_overview(message: Message, ctx: AccessContext) -> None:
     db, _, family_repo = get_repositories()
     repo = PlannedTaskRepository(db)
-    tasks = await repo.list_tasks(ctx.family_id)
-    groups = await family_repo.list_groups(ctx.family_id)
+    text = await _planned_tasks_overview_text(repo, family_repo, ctx.family_id)
+    await message.answer(text)
+
+
+async def _planned_tasks_overview_text(repo: PlannedTaskRepository, family_repo, family_id: int) -> str:
+    tasks = await repo.list_tasks(family_id)
+    groups = await family_repo.list_groups(family_id)
     if not tasks and not groups:
-        await message.answer("Список плановых задач пуст.")
-        return
+        return "Список плановых задач пуст."
 
     tasks_without_group: list = []
     tasks_by_group: dict[int, list] = {}
@@ -355,7 +359,7 @@ async def send_planned_tasks_overview(message: Message, ctx: AccessContext) -> N
                 lines.append(f"- {_task_caption(task)}")
         else:
             lines.append("- нет задач")
-    await message.answer("\n".join(lines))
+    return "\n".join(lines)
 
 
 async def _planned_tasks_edit_root_keyboard(
@@ -387,6 +391,7 @@ async def _planned_tasks_edit_root_keyboard(
         )
     if not rows:
         rows = [[InlineKeyboardButton(text="Нет доступных задач", callback_data="noop")]]
+    rows.append([InlineKeyboardButton(text="Назад", callback_data="pteditback")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1199,6 +1204,28 @@ async def planned_tasks_group_view(callback: CallbackQuery) -> None:
     except TelegramBadRequest as exc:
         await callback.answer(f"Не удалось открыть группу: {exc}", show_alert=True)
         return
+    await callback.answer()
+
+
+@router.callback_query(F.data == "pteditback")
+async def planned_tasks_edit_back_to_overview(callback: CallbackQuery) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    if not can_edit_planned_tasks(ctx):
+        await callback.answer("Нет прав", show_alert=True)
+        return
+    repo = PlannedTaskRepository(db)
+    text = await _planned_tasks_overview_text(repo, family_repo, ctx.family_id)
+    try:
+        await callback.message.edit_text(text, reply_markup=None)
+    except TelegramBadRequest:
+        await callback.message.answer(text)
     await callback.answer()
 
 
