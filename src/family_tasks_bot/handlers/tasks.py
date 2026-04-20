@@ -27,6 +27,52 @@ def _task_caption(task: dict | object) -> str:
     return f"{task['sort_order']}. {task['title']}{suffix}"
 
 
+async def _manual_done_root_keyboard(
+    runtime: TaskRuntimeRepository,
+    family_repo,
+    family_id: int,
+) -> InlineKeyboardMarkup:
+    tasks_without_room = await runtime.list_planned_tasks_without_room(family_id)
+    rooms = await family_repo.list_rooms(family_id)
+    rows: list[list[InlineKeyboardButton]] = []
+    for task in tasks_without_room:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=str(task["title"]),
+                    callback_data=f"manualdone:{task['id']}",
+                )
+            ]
+        )
+    for room in rooms:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f'Комната "{room["name"]}"',
+                    callback_data=f"manualroom:{room['id']}",
+                )
+            ]
+        )
+    if not rows:
+        rows = [[InlineKeyboardButton(text="Нет доступных задач", callback_data="manualroom:none")]]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _manual_done_room_keyboard(tasks: list[dict | object]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for task in tasks:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=str(task["title"]),
+                    callback_data=f"manualdone:{task['id']}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="Назад", callback_data="manualroom:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 async def send_planned_tasks_overview(message: Message, ctx: AccessContext) -> None:
     db, _, _ = get_repositories()
     repo = PlannedTaskRepository(db)
@@ -121,15 +167,14 @@ async def add_completed(message: Message) -> None:
     if await deny_if_no_family(message, ctx):
         return
     runtime = TaskRuntimeRepository(db)
-    tasks = await runtime.list_planned_tasks(ctx.family_id)
-    buttons = [{"id": str(task["id"]), "title": str(task["title"])} for task in tasks]
+    kb = await _manual_done_root_keyboard(runtime, family_repo, ctx.family_id)
     await message.answer(
         "Выберите выполненную задачу.\n"
         "После выбора будут созданы зависимые обязательные задачи.",
     )
     await message.answer(
         "Плановые задачи:",
-        reply_markup=tasks_keyboard(buttons, "manualdone"),
+        reply_markup=kb,
     )
     await message.answer(
         "Для возврата:",
@@ -158,6 +203,41 @@ async def add_to_execution(message: Message, state: FSMContext) -> None:
         reply_markup=back_menu(),
     )
     await state.clear()
+
+
+@router.callback_query(F.data.startswith("manualroom:"))
+async def add_completed_room_callback(callback: CallbackQuery) -> None:
+    token = callback.data.split(":", 1)[1]
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    runtime = TaskRuntimeRepository(db)
+    if token in {"back", "none"}:
+        kb = await _manual_done_root_keyboard(runtime, family_repo, ctx.family_id)
+        try:
+            await callback.message.edit_text("Плановые задачи:", reply_markup=kb)
+        except TelegramBadRequest:
+            await callback.message.answer("Плановые задачи:", reply_markup=kb)
+        await callback.answer()
+        return
+
+    room_id = int(token)
+    room = await family_repo.get_room(ctx.family_id, room_id)
+    if room is None:
+        await callback.answer("Комната не найдена.", show_alert=True)
+        return
+    tasks = await runtime.list_planned_tasks_by_room(ctx.family_id, room_id)
+    kb = _manual_done_room_keyboard(tasks)
+    text = f'Комната "{room["name"]}": выберите выполненную задачу.'
+    if not tasks:
+        text = f'Комната "{room["name"]}": активных задач нет.'
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
 
 
 @router.message(F.text == "Плановые задачи")
@@ -274,6 +354,7 @@ async def _build_task_editor_payload(
     dep_buttons: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text="Изменить имя", callback_data=f"editpttitle:{task_id}")],
         [InlineKeyboardButton(text="Комната", callback_data=f"editptroom:{task_id}")],
+        [InlineKeyboardButton(text="Удалить", callback_data=f"editptdelask:{task_id}")],
         [
             InlineKeyboardButton(
                 text="Деактивировать" if is_active else "Активировать",
@@ -491,6 +572,85 @@ async def edit_task_room_set(callback: CallbackQuery) -> None:
         await callback.answer("Комната обновлена, но не удалось изменить текущее сообщение", show_alert=True)
         return
     await callback.answer("Комната задачи обновлена")
+
+
+@router.callback_query(F.data.startswith("editptdelask:"))
+async def edit_task_delete_ask(callback: CallbackQuery) -> None:
+    task_id = int(callback.data.split(":")[1])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if not can_edit_planned_tasks(ctx):
+        await callback.answer("Нет прав", show_alert=True)
+        return
+    repo = PlannedTaskRepository(db)
+    task = await repo.get_task(ctx.family_id, task_id)
+    if task is None:
+        await callback.answer("Задача не найдена", show_alert=True)
+        return
+    history_count = await repo.count_task_history_actions(ctx.family_id, task_id)
+    if history_count > 0:
+        await callback.message.answer(
+            f"Задачу удалять запрещено, по ней заведено {history_count} действий в истории"
+        )
+        await callback.answer()
+        return
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Нет", callback_data=f"editptdelno:{task_id}"),
+                InlineKeyboardButton(text="Да", callback_data=f"editptdelyes:{task_id}"),
+            ]
+        ]
+    )
+    await callback.message.answer(
+        f"Вы действительно хоите удалить задачу {task['title']}",
+        reply_markup=kb,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("editptdelno:"))
+async def edit_task_delete_no(callback: CallbackQuery) -> None:
+    task_id = int(callback.data.split(":")[1])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if not can_edit_planned_tasks(ctx):
+        await callback.answer("Нет прав", show_alert=True)
+        return
+    repo = PlannedTaskRepository(db)
+    shown = await _send_task_editor(callback.message, repo, ctx.family_id, task_id)
+    if not shown:
+        await callback.answer("Задача не найдена", show_alert=True)
+        return
+    await callback.answer("Удаление отменено")
+
+
+@router.callback_query(F.data.startswith("editptdelyes:"))
+async def edit_task_delete_yes(callback: CallbackQuery) -> None:
+    task_id = int(callback.data.split(":")[1])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if not can_edit_planned_tasks(ctx):
+        await callback.answer("Нет прав", show_alert=True)
+        return
+    repo = PlannedTaskRepository(db)
+    task = await repo.get_task(ctx.family_id, task_id)
+    if task is None:
+        await callback.answer("Задача не найдена", show_alert=True)
+        return
+    deleted, history_count = await repo.delete_task_if_no_history(ctx.family_id, task_id)
+    if not deleted and history_count > 0:
+        await callback.message.answer(
+            f"Задачу удалять запрещено, по ней заведено {history_count} действий в истории"
+        )
+        await callback.answer()
+        return
+    if not deleted:
+        await callback.answer("Не удалось удалить задачу", show_alert=True)
+        return
+    await callback.message.answer(f"Задача {task['title']} удалена.")
+    await send_planned_tasks_overview(callback.message, ctx)
+    await callback.answer()
 
 
 @router.message(PlannedTaskStates.waiting_edit_title)

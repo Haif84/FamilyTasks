@@ -504,6 +504,32 @@ class PlannedTaskRepository:
         await self.conn.commit()
         return (cur.rowcount or 0) > 0
 
+    async def count_task_history_actions(self, family_id: int, task_id: int) -> int:
+        async with self.conn.execute(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM task_completions
+            WHERE family_id = ? AND planned_task_id = ?
+            """,
+            (family_id, task_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["cnt"])
+
+    async def delete_task_if_no_history(self, family_id: int, task_id: int) -> tuple[bool, int]:
+        history_count = await self.count_task_history_actions(family_id, task_id)
+        if history_count > 0:
+            return (False, history_count)
+        cur = await self.conn.execute(
+            """
+            DELETE FROM planned_tasks
+            WHERE family_id = ? AND id = ?
+            """,
+            (family_id, task_id),
+        )
+        await self.conn.commit()
+        return ((cur.rowcount or 0) > 0, 0)
+
     async def move_task_up(self, family_id: int, task_id: int) -> bool:
         return await self._swap_with_neighbor(family_id, task_id, direction="up")
 
@@ -708,6 +734,30 @@ class TaskRuntimeRepository:
             ORDER BY sort_order, title, id
             """,
             (family_id,),
+        ) as cursor:
+            return await cursor.fetchall()
+
+    async def list_planned_tasks_without_room(self, family_id: int) -> list[aiosqlite.Row]:
+        async with self.conn.execute(
+            """
+            SELECT id, title
+            FROM planned_tasks
+            WHERE family_id = ? AND is_active = 1 AND room_id IS NULL
+            ORDER BY sort_order, title, id
+            """,
+            (family_id,),
+        ) as cursor:
+            return await cursor.fetchall()
+
+    async def list_planned_tasks_by_room(self, family_id: int, room_id: int) -> list[aiosqlite.Row]:
+        async with self.conn.execute(
+            """
+            SELECT id, title
+            FROM planned_tasks
+            WHERE family_id = ? AND is_active = 1 AND room_id = ?
+            ORDER BY sort_order, title, id
+            """,
+            (family_id, room_id),
         ) as cursor:
             return await cursor.fetchall()
 

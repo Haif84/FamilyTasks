@@ -157,3 +157,58 @@ async def test_history_fields_and_edit_methods() -> None:
     missing = await runtime.get_completion_entry(1, completion_id)
     assert missing is None
     await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_planned_task_delete_blocked_when_history_exists() -> None:
+    conn = await _init_db()
+    planned = PlannedTaskRepository(conn)
+    runtime = TaskRuntimeRepository(conn)
+    task_id = await planned.create_task(1, "Laundry", 1)
+    await runtime.add_manual_completion(1, task_id, 1)
+
+    deleted, history_count = await planned.delete_task_if_no_history(1, task_id)
+    assert deleted is False
+    assert history_count == 1
+    task = await planned.get_task(1, task_id)
+    assert task is not None
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_planned_task_delete_when_no_history() -> None:
+    conn = await _init_db()
+    planned = PlannedTaskRepository(conn)
+    task_id = await planned.create_task(1, "Laundry", 1)
+
+    deleted, history_count = await planned.delete_task_if_no_history(1, task_id)
+    assert deleted is True
+    assert history_count == 0
+    task = await planned.get_task(1, task_id)
+    assert task is None
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_tasks_grouped_by_room_for_manual_completion() -> None:
+    conn = await _init_db()
+    await conn.execute("INSERT INTO rooms (id, family_id, name) VALUES (1, 1, 'Kitchen')")
+    await conn.execute("INSERT INTO rooms (id, family_id, name) VALUES (2, 1, 'Hall')")
+    await conn.commit()
+
+    planned = PlannedTaskRepository(conn)
+    runtime = TaskRuntimeRepository(conn)
+    t1 = await planned.create_task(1, "No room task", 1)
+    t2 = await planned.create_task(1, "Kitchen task", 1)
+    t3 = await planned.create_task(1, "Hall task", 1)
+    await planned.set_task_room(1, t2, 1)
+    await planned.set_task_room(1, t3, 2)
+
+    without_room = await runtime.list_planned_tasks_without_room(1)
+    kitchen = await runtime.list_planned_tasks_by_room(1, 1)
+    hall = await runtime.list_planned_tasks_by_room(1, 2)
+
+    assert {int(row["id"]) for row in without_room} == {t1}
+    assert {int(row["id"]) for row in kitchen} == {t2}
+    assert {int(row["id"]) for row in hall} == {t3}
+    await conn.close()
