@@ -151,4 +151,9 @@ async def test_history_fields_and_edit_methods() -> None:
     assert str(saved["completed_at"]) == "2026-04-20 10:30:00"
     assert saved["added_at"] is not None
     assert saved["history_updated_at"] is not None
+
+    deleted = await runtime.delete_completion_entry(1, completion_id)
+    assert deleted is True
+    missing = await runtime.get_completion_entry(1, completion_id)
+    assert missing is None
     await conn.close()

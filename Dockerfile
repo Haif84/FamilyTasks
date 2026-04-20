@@ -9,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gosu \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gosu \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --shell /bin/bash appuser

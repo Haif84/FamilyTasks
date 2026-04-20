@@ -391,6 +391,17 @@ def _history_card_text(entry: dict, timezone_name: str) -> str:
     )
 
 
+def _history_entry_actions_keyboard(completion_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Исполнитель", callback_data=f"histeditexec:{completion_id}")],
+            [InlineKeyboardButton(text="Дата/время", callback_data=f"histedittime:{completion_id}")],
+            [InlineKeyboardButton(text="Удалить", callback_data=f"histeditdelask:{completion_id}")],
+            [InlineKeyboardButton(text="Назад", callback_data="histeditback")],
+        ]
+    )
+
+
 @router.message(NavStates.in_stats_menu, F.text == "Правка")
 async def stats_history_edit_menu(message: Message) -> None:
     db, user_repo, family_repo = get_repositories()
@@ -411,7 +422,8 @@ async def stats_history_edit_menu(message: Message) -> None:
 
 
 @router.callback_query(F.data == "histeditback")
-async def stats_history_edit_back(callback: CallbackQuery) -> None:
+async def stats_history_edit_back(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if ctx.family_id is None:
@@ -431,7 +443,8 @@ async def stats_history_edit_back(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("histedit:"))
-async def stats_history_edit_entry(callback: CallbackQuery) -> None:
+async def stats_history_edit_entry(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
     completion_id = int(callback.data.split(":")[1])
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
@@ -447,13 +460,7 @@ async def stats_history_edit_entry(callback: CallbackQuery) -> None:
         await callback.answer("Запись не найдена.", show_alert=True)
         return
     timezone_name = ctx.family_timezone or "UTC"
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Исполнитель", callback_data=f"histeditexec:{completion_id}")],
-            [InlineKeyboardButton(text="Дата/время", callback_data=f"histedittime:{completion_id}")],
-            [InlineKeyboardButton(text="Назад", callback_data="histeditback")],
-        ]
-    )
+    kb = _history_entry_actions_keyboard(completion_id)
     await callback.message.answer(_history_card_text(entry, timezone_name), reply_markup=kb)
     await callback.answer()
 
@@ -515,13 +522,7 @@ async def stats_history_edit_executor_save(callback: CallbackQuery, state: FSMCo
     await state.clear()
     if entry is not None:
         timezone_name = ctx.family_timezone or "UTC"
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="Исполнитель", callback_data=f"histeditexec:{completion_id}")],
-                [InlineKeyboardButton(text="Дата/время", callback_data=f"histedittime:{completion_id}")],
-                [InlineKeyboardButton(text="Назад", callback_data="histeditback")],
-            ]
-        )
+        kb = _history_entry_actions_keyboard(completion_id)
         await callback.message.answer(_history_card_text(entry, timezone_name), reply_markup=kb)
     await callback.answer("Исполнитель обновлен.")
 
@@ -585,18 +586,90 @@ async def stats_history_edit_time_save(message: Message, state: FSMContext) -> N
     await state.clear()
     await message.answer("Время действия обновлено.")
     if entry is not None:
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="Исполнитель", callback_data=f"histeditexec:{completion_id}")],
-                [InlineKeyboardButton(text="Дата/время", callback_data=f"histedittime:{completion_id}")],
-                [InlineKeyboardButton(text="Назад", callback_data="histeditback")],
-            ]
-        )
+        kb = _history_entry_actions_keyboard(completion_id)
         await message.answer(_history_card_text(entry, timezone_name), reply_markup=kb)
 
 
+@router.callback_query(F.data.startswith("histeditdelask:"))
+async def stats_history_delete_ask(callback: CallbackQuery) -> None:
+    completion_id = int(callback.data.split(":")[1])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    if not ctx.is_admin:
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+    runtime = TaskRuntimeRepository(db)
+    entry = await runtime.get_completion_entry(ctx.family_id, completion_id)
+    if entry is None:
+        await callback.answer("Запись не найдена.", show_alert=True)
+        return
+    timezone_name = ctx.family_timezone or "UTC"
+    line = _history_line(entry, timezone_name).lstrip("- ").strip()
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Нет", callback_data=f"histeditdelno:{completion_id}"),
+                InlineKeyboardButton(text="Да", callback_data=f"histeditdelyes:{completion_id}"),
+            ]
+        ]
+    )
+    await callback.message.answer(
+        f"Вы точно хотите удалить запись в истории: {line}",
+        reply_markup=kb,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("histeditdelno:"))
+async def stats_history_delete_no(callback: CallbackQuery) -> None:
+    completion_id = int(callback.data.split(":")[1])
+    await callback.message.answer(
+        "Удаление отменено.",
+        reply_markup=_history_entry_actions_keyboard(completion_id),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("histeditdelyes:"))
+async def stats_history_delete_yes(callback: CallbackQuery) -> None:
+    completion_id = int(callback.data.split(":")[1])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    if not ctx.is_admin:
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+    runtime = TaskRuntimeRepository(db)
+    deleted = await runtime.delete_completion_entry(ctx.family_id, completion_id)
+    if not deleted:
+        await callback.answer("Не удалось удалить запись.", show_alert=True)
+        return
+    timezone_name = ctx.family_timezone or "UTC"
+    rows = await runtime.list_recent_actions(ctx.family_id, HISTORY_LIMIT, 0)
+    await callback.message.answer("Запись истории удалена.")
+    await callback.message.answer(
+        "Выберите запись истории для правки:",
+        reply_markup=_history_edit_list_keyboard(rows, timezone_name),
+    )
+    await callback.answer()
+
+
 @router.message(StatsStates.waiting_history_executor)
-async def stats_history_executor_waiting_hint(message: Message) -> None:
+async def stats_history_executor_waiting_hint(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == "Назад":
+        _, user_repo, family_repo = get_repositories()
+        ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+        await state.clear()
+        await message.answer(
+            "Главное меню",
+            reply_markup=main_menu(is_admin=ctx.is_admin),
+        )
+        return
     await message.answer("Выберите исполнителя кнопкой из списка ниже.")
 
 

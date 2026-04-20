@@ -1103,6 +1103,51 @@ class TaskRuntimeRepository:
         await self.conn.commit()
         return (cur.rowcount or 0) > 0
 
+    async def delete_completion_entry(self, family_id: int, completion_id: int) -> bool:
+        await self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            async with self.conn.execute(
+                "SELECT task_instance_id FROM task_completions WHERE family_id = ? AND id = ? LIMIT 1",
+                (family_id, completion_id),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                await self.conn.rollback()
+                return False
+
+            await self.conn.execute(
+                """
+                UPDATE undo_log
+                SET is_reverted = 1
+                WHERE family_id = ?
+                  AND action_type = 'completion'
+                  AND action_ref_id = ?
+                  AND is_reverted = 0
+                """,
+                (family_id, completion_id),
+            )
+
+            task_instance_id = row["task_instance_id"]
+            if task_instance_id is not None:
+                await self.conn.execute(
+                    """
+                    UPDATE task_instances
+                    SET status = 'pending'
+                    WHERE id = ? AND family_id = ? AND status = 'done'
+                    """,
+                    (task_instance_id, family_id),
+                )
+
+            await self.conn.execute(
+                "DELETE FROM task_completions WHERE family_id = ? AND id = ?",
+                (family_id, completion_id),
+            )
+            await self.conn.commit()
+            return True
+        except Exception:
+            await self.conn.rollback()
+            raise
+
     async def activate_due_scheduled(self) -> list[aiosqlite.Row]:
         now_iso = datetime.now(timezone.utc).isoformat()
         async with self.conn.execute(
