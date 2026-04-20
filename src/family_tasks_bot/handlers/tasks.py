@@ -801,6 +801,7 @@ async def _build_task_editor_payload(
             InlineKeyboardButton(text="Вниз", callback_data=f"editptmove:{task_id}:down"),
         ],
         [InlineKeyboardButton(text="Добавить зависимость", callback_data=f"adddep:{task_id}")],
+        [InlineKeyboardButton(text="Назад", callback_data="grouptasks:0")],
     ]
     for dep in deps:
         dep_buttons.append(
