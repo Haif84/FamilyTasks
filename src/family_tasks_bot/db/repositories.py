@@ -130,6 +130,28 @@ class FamilyRepository:
         ) as cursor:
             return await cursor.fetchall()
 
+    async def get_family_timezone(self, family_id: int) -> str:
+        async with self.conn.execute(
+            "SELECT timezone FROM families WHERE id = ?",
+            (family_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return "UTC"
+        return str(row["timezone"] or "UTC")
+
+    async def update_family_timezone(self, family_id: int, timezone_name: str) -> bool:
+        cur = await self.conn.execute(
+            """
+            UPDATE families
+            SET timezone = ?
+            WHERE id = ?
+            """,
+            (timezone_name, family_id),
+        )
+        await self.conn.commit()
+        return (cur.rowcount or 0) > 0
+
     async def add_invite(
         self,
         family_id: int,
@@ -668,18 +690,32 @@ class TaskRuntimeRepository:
         await self.conn.commit()
         return True
 
-    async def stats_summary(self, family_id: int, period_days: int) -> tuple[list[aiosqlite.Row], int, int]:
+    def _stats_since_utc(self, period_days: int, timezone_name: str) -> str:
+        try:
+            tz = ZoneInfo(timezone_name)
+        except Exception:
+            tz = timezone.utc
+        now_local = datetime.now(timezone.utc).astimezone(tz)
+        local_day_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        since_local = local_day_start - timedelta(days=max(period_days - 1, 0))
+        since_utc = since_local.astimezone(timezone.utc)
+        return since_utc.strftime("%Y-%m-%d %H:%M:%S")
+
+    async def stats_summary(
+        self, family_id: int, period_days: int, timezone_name: str = "UTC"
+    ) -> tuple[list[aiosqlite.Row], int, int]:
+        since_utc = self._stats_since_utc(period_days, timezone_name)
         async with self.conn.execute(
             """
             SELECT u.display_name, COUNT(*) AS cnt
             FROM task_completions tc
             JOIN users u ON u.id = tc.completed_by
             WHERE tc.family_id = ?
-              AND tc.completed_at >= datetime('now', ?)
+              AND datetime(tc.completed_at) >= datetime(?)
             GROUP BY u.id, u.display_name
             ORDER BY cnt DESC
             """,
-            (family_id, f"-{period_days} days"),
+            (family_id, since_utc),
         ) as cursor:
             by_user = await cursor.fetchall()
         async with self.conn.execute(
@@ -694,18 +730,19 @@ class TaskRuntimeRepository:
             scheduled = int((await cursor.fetchone())["cnt"])
         return by_user, active, scheduled
 
-    async def stats_by_task_type(self, family_id: int, period_days: int) -> list[aiosqlite.Row]:
+    async def stats_by_task_type(self, family_id: int, period_days: int, timezone_name: str = "UTC") -> list[aiosqlite.Row]:
+        since_utc = self._stats_since_utc(period_days, timezone_name)
         async with self.conn.execute(
             """
             SELECT pt.title, COUNT(*) AS cnt
             FROM task_completions tc
             JOIN planned_tasks pt ON pt.id = tc.planned_task_id
             WHERE tc.family_id = ?
-              AND tc.completed_at >= datetime('now', ?)
+              AND datetime(tc.completed_at) >= datetime(?)
             GROUP BY pt.id, pt.title
             ORDER BY cnt DESC, pt.title
             """,
-            (family_id, f"-{period_days} days"),
+            (family_id, since_utc),
         ) as cursor:
             return await cursor.fetchall()
 

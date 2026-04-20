@@ -5,6 +5,7 @@ class FamilyStates(StatesGroup):
     waiting_parent_username = State()
     waiting_child_username = State()
     waiting_member_display_name = State()
+    waiting_family_timezone = State()
 
 
 class PlannedTaskStates(StatesGroup):

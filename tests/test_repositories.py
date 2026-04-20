@@ -71,3 +71,25 @@ async def test_stats_by_task_type() -> None:
     assert "Feed dogs" in titles
     assert "Walk dogs" in titles
     await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_stats_timezone_boundary_respected() -> None:
+    conn = await _init_db()
+    planned = PlannedTaskRepository(conn)
+    runtime = TaskRuntimeRepository(conn)
+    t1 = await planned.create_task(1, "Laundry", 1)
+    instance_id = await runtime.create_instance(1, t1, 1, "manual")
+    await runtime.complete_instance(instance_id, 1, "current")
+    await conn.execute(
+        "UPDATE task_completions SET completed_at = datetime('now', '-2 hours') WHERE family_id = 1"
+    )
+    await conn.commit()
+
+    by_user_utc, _, _ = await runtime.stats_summary(1, 1, "UTC")
+    assert len(by_user_utc) == 0
+
+    by_user_moscow, _, _ = await runtime.stats_summary(1, 1, "Europe/Moscow")
+    assert len(by_user_moscow) == 1
+    assert int(by_user_moscow[0]["cnt"]) == 1
+    await conn.close()

@@ -59,9 +59,15 @@ def stats_menu() -> ReplyKeyboardMarkup:
 
 
 def family_menu(is_admin: bool) -> ReplyKeyboardMarkup:
-    labels = ["Список"]
+    labels = ["Список", "Часовой пояс семьи"]
     if is_admin:
-        labels.extend(["Править состав семьи", "Добавить родителя", "Добавить ребенка"])
+        labels.extend(
+            [
+                "Править состав семьи",
+                "Добавить родителя",
+                "Добавить ребенка",
+            ]
+        )
     labels.append("Назад")
     rows = _rows_of_two(labels)
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
