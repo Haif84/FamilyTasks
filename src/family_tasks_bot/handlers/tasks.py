@@ -45,6 +45,9 @@ async def _manual_done_root_keyboard(
             ]
         )
     for group in groups:
+        tasks_in_group = await runtime.list_planned_tasks_by_group(family_id, int(group["id"]))
+        if not tasks_in_group:
+            continue
         rows.append(
             [
                 InlineKeyboardButton(
@@ -70,6 +73,55 @@ def _manual_done_group_keyboard(tasks: list[dict | object]) -> InlineKeyboardMar
             ]
         )
     rows.append([InlineKeyboardButton(text="Назад", callback_data="manualgroup:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _add_execution_root_keyboard(
+    runtime: TaskRuntimeRepository,
+    family_repo,
+    family_id: int,
+) -> InlineKeyboardMarkup:
+    tasks_without_group = await runtime.list_planned_tasks_without_group(family_id)
+    groups = await family_repo.list_groups(family_id)
+    rows: list[list[InlineKeyboardButton]] = []
+    for task in tasks_without_group:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=str(task["title"]),
+                    callback_data=f"addexec:{task['id']}",
+                )
+            ]
+        )
+    for group in groups:
+        tasks_in_group = await runtime.list_planned_tasks_by_group(family_id, int(group["id"]))
+        if not tasks_in_group:
+            continue
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f'Группа "{group["name"]}"',
+                    callback_data=f"addexecgroup:{group['id']}",
+                )
+            ]
+        )
+    if not rows:
+        rows = [[InlineKeyboardButton(text="Нет доступных задач", callback_data="addexecgroup:none")]]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _add_execution_group_keyboard(tasks: list[dict | object]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for task in tasks:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=str(task["title"]),
+                    callback_data=f"addexec:{task['id']}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="Назад", callback_data="addexecgroup:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -206,14 +258,17 @@ async def add_to_execution(message: Message, state: FSMContext) -> None:
         await message.answer("Добавление задач к выполнению доступно только администраторам.")
         return
     runtime = TaskRuntimeRepository(db)
-    tasks = await runtime.list_planned_tasks(ctx.family_id)
-    buttons = [{"id": str(task["id"]), "title": str(task["title"])} for task in tasks]
+    kb = await _add_execution_root_keyboard(runtime, family_repo, ctx.family_id)
     await message.answer(
-        "Выберите задачу к выполнению:",
-        reply_markup=tasks_keyboard(buttons, "addexec"),
+        "Выберите задачу к выполнению.\n"
+        "После выбора можно добавить сейчас или ввести время чч:мм.",
     )
     await message.answer(
-        "После выбора можно добавить сейчас или ввести время чч:мм.",
+        "Плановые задачи:",
+        reply_markup=kb,
+    )
+    await message.answer(
+        "Для возврата:",
         reply_markup=back_menu(),
     )
     await state.clear()
@@ -247,6 +302,45 @@ async def add_completed_group_callback(callback: CallbackQuery) -> None:
     text = f'Группа "{group["name"]}": выберите выполненную задачу.'
     if not tasks:
         text = f'Группа "{group["name"]}": активных задач нет.'
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("addexecgroup:"))
+async def add_execution_group_callback(callback: CallbackQuery) -> None:
+    token = callback.data.split(":", 1)[1]
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    if not can_add_to_execution(ctx):
+        await callback.answer("Нет прав", show_alert=True)
+        return
+    runtime = TaskRuntimeRepository(db)
+    if token in {"back", "none"}:
+        kb = await _add_execution_root_keyboard(runtime, family_repo, ctx.family_id)
+        try:
+            await callback.message.edit_text("Плановые задачи:", reply_markup=kb)
+        except TelegramBadRequest:
+            await callback.message.answer("Плановые задачи:", reply_markup=kb)
+        await callback.answer()
+        return
+
+    group_id = int(token)
+    group = await family_repo.get_group(ctx.family_id, group_id)
+    if group is None:
+        await callback.answer("Группа не найдена.", show_alert=True)
+        return
+    tasks = await runtime.list_planned_tasks_by_group(ctx.family_id, group_id)
+    if not tasks:
+        await callback.answer("В группе нет активных задач.", show_alert=True)
+        return
+    kb = _add_execution_group_keyboard(tasks)
+    text = f'Группа "{group["name"]}": выберите задачу к выполнению.'
     try:
         await callback.message.edit_text(text, reply_markup=kb)
     except TelegramBadRequest:

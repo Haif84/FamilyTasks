@@ -225,10 +225,10 @@ class FamilyRepository:
     async def list_groups(self, family_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
-            SELECT id, family_id, name, created_at, updated_at
+            SELECT id, family_id, name, sort_order, created_at, updated_at
             FROM groups
             WHERE family_id = ?
-            ORDER BY name, id
+            ORDER BY sort_order, name, id
             """,
             (family_id,),
         ) as cursor:
@@ -237,7 +237,7 @@ class FamilyRepository:
     async def get_group(self, family_id: int, group_id: int) -> aiosqlite.Row | None:
         async with self.conn.execute(
             """
-            SELECT id, family_id, name, created_at, updated_at
+            SELECT id, family_id, name, sort_order, created_at, updated_at
             FROM groups
             WHERE family_id = ? AND id = ?
             """,
@@ -258,10 +258,12 @@ class FamilyRepository:
             return None
         cur = await self.conn.execute(
             """
-            INSERT INTO groups (family_id, name)
-            VALUES (?, ?)
+            INSERT INTO groups (family_id, name, sort_order)
+            VALUES (
+                ?, ?, COALESCE((SELECT MAX(sort_order) + 1 FROM groups WHERE family_id = ?), 1)
+            )
             """,
-            (family_id, normalized),
+            (family_id, normalized, family_id),
         )
         await self.conn.commit()
         return int(cur.lastrowid)
@@ -294,6 +296,12 @@ class FamilyRepository:
         )
         await self.conn.commit()
         return (cur.rowcount or 0) > 0
+
+    async def move_group_up(self, family_id: int, group_id: int) -> bool:
+        return await self._swap_group_with_neighbor(family_id, group_id, direction="up")
+
+    async def move_group_down(self, family_id: int, group_id: int) -> bool:
+        return await self._swap_group_with_neighbor(family_id, group_id, direction="down")
 
     async def delete_group(self, family_id: int, group_id: int) -> bool:
         await self.conn.execute("BEGIN IMMEDIATE")
@@ -346,6 +354,57 @@ class FamilyRepository:
         )
         await self.conn.commit()
         return True
+
+    async def _swap_group_with_neighbor(self, family_id: int, group_id: int, direction: str) -> bool:
+        direction = direction.lower()
+        if direction not in {"up", "down"}:
+            raise ValueError(f"Unsupported direction: {direction}")
+
+        comparator = "<" if direction == "up" else ">"
+        sort_direction = "DESC" if direction == "up" else "ASC"
+        await self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            async with self.conn.execute(
+                """
+                SELECT id, sort_order
+                FROM groups
+                WHERE family_id = ? AND id = ?
+                """,
+                (family_id, group_id),
+            ) as cursor:
+                current = await cursor.fetchone()
+            if current is None:
+                await self.conn.rollback()
+                return False
+
+            async with self.conn.execute(
+                f"""
+                SELECT id, sort_order
+                FROM groups
+                WHERE family_id = ? AND sort_order {comparator} ?
+                ORDER BY sort_order {sort_direction}, id {sort_direction}
+                LIMIT 1
+                """,
+                (family_id, int(current["sort_order"])),
+            ) as cursor:
+                neighbor = await cursor.fetchone()
+            if neighbor is None:
+                await self.conn.rollback()
+                return False
+
+            await self.conn.execute(
+                "UPDATE groups SET sort_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND family_id = ?",
+                (int(neighbor["sort_order"]), int(current["id"]), family_id),
+            )
+            await self.conn.execute(
+                "UPDATE groups SET sort_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND family_id = ?",
+                (int(current["sort_order"]), int(neighbor["id"]), family_id),
+            )
+            await self.conn.commit()
+            return True
+        except Exception:
+            await self.conn.rollback()
+            raise
 
     async def admin_count(self, family_id: int) -> int:
         async with self.conn.execute(

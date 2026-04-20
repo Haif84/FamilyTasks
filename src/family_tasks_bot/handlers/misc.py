@@ -80,7 +80,7 @@ def _parse_local_datetime_to_utc(value: str, timezone_name: str) -> str | None:
 
 def _groups_editor_keyboard(groups: list) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text=str(group["name"]), callback_data=f"groupedit:{group['id']}")]
+        [InlineKeyboardButton(text=f"{group['sort_order']}. {group['name']}", callback_data=f"groupedit:{group['id']}")]
         for group in groups
     ]
     rows.append([InlineKeyboardButton(text="Добавить группу", callback_data="groupadd")])
@@ -116,7 +116,7 @@ async def list_groups(message: Message) -> None:
         return
     lines = ["Группы:"]
     for group in groups:
-        lines.append(f"- {group['name']}")
+        lines.append(f"- {group['sort_order']}. {group['name']}")
     await message.answer("\n".join(lines))
 
 
@@ -708,10 +708,55 @@ async def groups_edit_card(callback: CallbackQuery) -> None:
         inline_keyboard=[
             [InlineKeyboardButton(text="Переименовать", callback_data=f"grouprename:{group_id}")],
             [InlineKeyboardButton(text="Удалить", callback_data=f"groupdelete:{group_id}")],
+            [
+                InlineKeyboardButton(text="Вверх", callback_data=f"groupmove:{group_id}:up"),
+                InlineKeyboardButton(text="Вниз", callback_data=f"groupmove:{group_id}:down"),
+            ],
         ]
     )
     await callback.answer()
-    await callback.message.answer(f"Группа: {group['name']}", reply_markup=kb)
+    await callback.message.answer(f"Группа: {group['name']}\nПозиция: {group['sort_order']}", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("groupmove:"))
+async def groups_move(callback: CallbackQuery) -> None:
+    _, group_id_raw, direction = callback.data.split(":")
+    group_id = int(group_id_raw)
+    _, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    if not ctx.is_admin:
+        await callback.answer("Только администратор может править группы.", show_alert=True)
+        return
+    moved = (
+        await family_repo.move_group_up(ctx.family_id, group_id)
+        if direction == "up"
+        else await family_repo.move_group_down(ctx.family_id, group_id)
+    )
+    if not moved:
+        await callback.answer("Перемещение недоступно", show_alert=True)
+        return
+    group = await family_repo.get_group(ctx.family_id, group_id)
+    if group is None:
+        await callback.answer("Группа не найдена.", show_alert=True)
+        return
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Переименовать", callback_data=f"grouprename:{group_id}")],
+            [InlineKeyboardButton(text="Удалить", callback_data=f"groupdelete:{group_id}")],
+            [
+                InlineKeyboardButton(text="Вверх", callback_data=f"groupmove:{group_id}:up"),
+                InlineKeyboardButton(text="Вниз", callback_data=f"groupmove:{group_id}:down"),
+            ],
+        ]
+    )
+    await callback.message.edit_text(
+        f"Группа: {group['name']}\nПозиция: {group['sort_order']}",
+        reply_markup=kb,
+    )
+    await callback.answer("Порядок групп обновлен")
 
 
 @router.callback_query(F.data.startswith("grouprename:"))

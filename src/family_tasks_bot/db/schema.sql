@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS groups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     family_id INTEGER NOT NULL,
     name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (family_id, name),
@@ -173,6 +174,9 @@ CREATE INDEX IF NOT EXISTS idx_planned_tasks_family_sort_order
 
 CREATE INDEX IF NOT EXISTS idx_groups_family_name
     ON groups(family_id, name);
+
+CREATE INDEX IF NOT EXISTS idx_groups_family_sort_order
+    ON groups(family_id, sort_order);
 
 CREATE INDEX IF NOT EXISTS idx_planned_tasks_family_group_sort
     ON planned_tasks(family_id, group_id, sort_order);

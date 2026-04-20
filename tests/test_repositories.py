@@ -6,7 +6,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from family_tasks_bot.db.repositories import PlannedTaskRepository, TaskRuntimeRepository, UserRepository
+from family_tasks_bot.db.repositories import FamilyRepository, PlannedTaskRepository, TaskRuntimeRepository, UserRepository
 
 
 async def _init_db() -> aiosqlite.Connection:
@@ -211,4 +211,27 @@ async def test_runtime_tasks_grouped_by_group_for_manual_completion() -> None:
     assert {int(row["id"]) for row in without_group} == {t1}
     assert {int(row["id"]) for row in kitchen} == {t2}
     assert {int(row["id"]) for row in hall} == {t3}
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_group_sort_order_create_and_move() -> None:
+    conn = await _init_db()
+    family = FamilyRepository(conn)
+    g1 = await family.create_group(1, "Kitchen")
+    g2 = await family.create_group(1, "Hall")
+    g3 = await family.create_group(1, "Balcony")
+
+    groups = await family.list_groups(1)
+    assert [(int(row["id"]), int(row["sort_order"])) for row in groups] == [(g1, 1), (g2, 2), (g3, 3)]
+
+    moved_up = await family.move_group_up(1, g3)
+    assert moved_up is True
+    groups_after_up = await family.list_groups(1)
+    assert [int(row["id"]) for row in groups_after_up] == [g1, g3, g2]
+
+    moved_down = await family.move_group_down(1, g1)
+    assert moved_down is True
+    groups_after_down = await family.list_groups(1)
+    assert [int(row["id"]) for row in groups_after_down] == [g3, g1, g2]
     await conn.close()
