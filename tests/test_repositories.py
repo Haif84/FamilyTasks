@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import aiosqlite
@@ -81,9 +82,12 @@ async def test_stats_timezone_boundary_respected() -> None:
     t1 = await planned.create_task(1, "Laundry", 1)
     instance_id = await runtime.create_instance(1, t1, 1, "manual")
     await runtime.complete_instance(instance_id, 1, "current")
-    await conn.execute(
-        "UPDATE task_completions SET completed_at = datetime('now', '-2 hours') WHERE family_id = 1"
-    )
+    utc_since = datetime.strptime(runtime._stats_since_utc(1, "UTC"), "%Y-%m-%d %H:%M:%S")
+    moscow_since = datetime.strptime(runtime._stats_since_utc(1, "Europe/Moscow"), "%Y-%m-%d %H:%M:%S")
+    assert moscow_since < utc_since
+    midpoint = moscow_since + (utc_since - moscow_since) / 2
+    completion_at = midpoint.strftime("%Y-%m-%d %H:%M:%S")
+    await conn.execute("UPDATE task_completions SET completed_at = ? WHERE family_id = 1", (completion_at,))
     await conn.commit()
 
     by_user_utc, _, _ = await runtime.stats_summary(1, 1, "UTC")

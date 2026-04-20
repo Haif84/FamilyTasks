@@ -18,7 +18,7 @@ async def test_schema_migrations_idempotent() -> None:
 
     async with conn.execute("SELECT COUNT(*) AS cnt FROM schema_migrations") as cursor:
         row = await cursor.fetchone()
-    assert int(row["cnt"]) == 2
+    assert int(row["cnt"]) == 3
 
     async with conn.execute("SELECT COUNT(*) AS cnt FROM default_tasks") as cursor:
         row = await cursor.fetchone()
