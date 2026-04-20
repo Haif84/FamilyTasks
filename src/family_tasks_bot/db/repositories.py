@@ -459,7 +459,15 @@ class PlannedTaskRepository:
     async def list_tasks(self, family_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
-            SELECT pt.id, pt.title, pt.is_active, pt.sort_order, pt.group_id, pt.requires_comment, g.name AS group_name
+            SELECT
+                pt.id,
+                pt.title,
+                pt.is_active,
+                pt.sort_order,
+                pt.group_id,
+                pt.requires_comment,
+                pt.effort_stars,
+                g.name AS group_name
             FROM planned_tasks pt
             LEFT JOIN groups g ON g.id = pt.group_id AND g.family_id = pt.family_id
             WHERE pt.family_id = ?
@@ -472,7 +480,15 @@ class PlannedTaskRepository:
     async def get_task(self, family_id: int, task_id: int) -> aiosqlite.Row | None:
         async with self.conn.execute(
             """
-            SELECT pt.id, pt.title, pt.sort_order, pt.is_active, pt.group_id, pt.requires_comment, g.name AS group_name
+            SELECT
+                pt.id,
+                pt.title,
+                pt.sort_order,
+                pt.is_active,
+                pt.group_id,
+                pt.requires_comment,
+                pt.effort_stars,
+                g.name AS group_name
             FROM planned_tasks pt
             LEFT JOIN groups g ON g.id = pt.group_id AND g.family_id = pt.family_id
             WHERE pt.family_id = ? AND pt.id = ?
@@ -484,7 +500,15 @@ class PlannedTaskRepository:
     async def list_tasks_by_group(self, family_id: int, group_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
-            SELECT pt.id, pt.title, pt.is_active, pt.sort_order, pt.group_id, pt.requires_comment, g.name AS group_name
+            SELECT
+                pt.id,
+                pt.title,
+                pt.is_active,
+                pt.sort_order,
+                pt.group_id,
+                pt.requires_comment,
+                pt.effort_stars,
+                g.name AS group_name
             FROM planned_tasks pt
             JOIN groups g ON g.id = pt.group_id AND g.family_id = pt.family_id
             WHERE pt.family_id = ? AND pt.group_id = ?
@@ -497,7 +521,7 @@ class PlannedTaskRepository:
     async def list_tasks_without_group(self, family_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
-            SELECT id, title, is_active, sort_order, group_id, requires_comment
+            SELECT id, title, is_active, sort_order, group_id, requires_comment, effort_stars
             FROM planned_tasks
             WHERE family_id = ? AND group_id IS NULL
             ORDER BY sort_order, title, id
@@ -571,6 +595,19 @@ class PlannedTaskRepository:
             WHERE family_id = ? AND id = ?
             """,
             (int(requires_comment), family_id, task_id),
+        )
+        await self.conn.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def set_task_effort_stars(self, family_id: int, task_id: int, effort_stars: int) -> bool:
+        normalized = max(1, min(5, int(effort_stars)))
+        cur = await self.conn.execute(
+            """
+            UPDATE planned_tasks
+            SET effort_stars = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE family_id = ? AND id = ?
+            """,
+            (normalized, family_id, task_id),
         )
         await self.conn.commit()
         return (cur.rowcount or 0) > 0
@@ -799,7 +836,7 @@ class TaskRuntimeRepository:
     async def list_planned_tasks(self, family_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
-            SELECT id, title
+            SELECT id, title, effort_stars
             FROM planned_tasks
             WHERE family_id = ? AND is_active = 1
             ORDER BY sort_order, title, id
@@ -811,7 +848,7 @@ class TaskRuntimeRepository:
     async def list_planned_tasks_without_group(self, family_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
-            SELECT id, title
+            SELECT id, title, effort_stars
             FROM planned_tasks
             WHERE family_id = ? AND is_active = 1 AND group_id IS NULL
             ORDER BY sort_order, title, id
@@ -823,7 +860,7 @@ class TaskRuntimeRepository:
     async def list_planned_tasks_by_group(self, family_id: int, group_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
-            SELECT id, title
+            SELECT id, title, effort_stars
             FROM planned_tasks
             WHERE family_id = ? AND is_active = 1 AND group_id = ?
             ORDER BY sort_order, title, id
@@ -1074,6 +1111,27 @@ class TaskRuntimeRepository:
         ) as cursor:
             scheduled = int((await cursor.fetchone())["cnt"])
         return by_user, active, scheduled, start_local_date, end_local_date
+
+    async def stats_stars_by_user_current_week(
+        self, family_id: int, timezone_name: str = "UTC"
+    ) -> list[aiosqlite.Row]:
+        since_utc, _, _ = self._current_week_since_utc(timezone_name)
+        async with self.conn.execute(
+            """
+            SELECT
+                u.display_name,
+                SUM(COALESCE(pt.effort_stars, 1)) AS stars
+            FROM task_completions tc
+            JOIN users u ON u.id = tc.completed_by
+            JOIN planned_tasks pt ON pt.id = tc.planned_task_id
+            WHERE tc.family_id = ?
+              AND datetime(tc.completed_at) >= datetime(?)
+            GROUP BY u.id, u.display_name
+            ORDER BY stars DESC, u.display_name
+            """,
+            (family_id, since_utc),
+        ) as cursor:
+            return await cursor.fetchall()
 
     async def stats_by_task_type_current_week(
         self, family_id: int, timezone_name: str = "UTC"

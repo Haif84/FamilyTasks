@@ -75,6 +75,11 @@ async def _clear_callback_inline_keyboard(callback: CallbackQuery) -> None:
             pass
 
 
+def _stars_text(stars: int) -> str:
+    normalized = max(1, min(5, int(stars)))
+    return ("★" * normalized) + ("☆" * (5 - normalized))
+
+
 async def _manual_done_root_keyboard(
     runtime: TaskRuntimeRepository,
     family_repo,
@@ -106,6 +111,7 @@ async def _manual_done_root_keyboard(
         )
     if not rows:
         rows = [[InlineKeyboardButton(text="Нет доступных задач", callback_data="manualgroup:none")]]
+    rows.append([InlineKeyboardButton(text="Отмена", callback_data="manualgroup:cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -178,6 +184,14 @@ async def _manual_done_for_member_root_keyboard(
                 )
             ]
         ]
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="Отмена",
+                callback_data=f"manualforgroup:{target_user_id}:cancel",
+            )
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -234,6 +248,7 @@ async def _add_execution_root_keyboard(
         )
     if not rows:
         rows = [[InlineKeyboardButton(text="Нет доступных задач", callback_data="addexecgroup:none")]]
+    rows.append([InlineKeyboardButton(text="Отмена", callback_data="addexecgroup:cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -421,10 +436,6 @@ async def add_completed(message: Message) -> None:
         "Плановые задачи:",
         reply_markup=kb,
     )
-    await message.answer(
-        "Для возврата:",
-        reply_markup=back_menu(),
-    )
 
 
 @router.message(F.text == "Добавить выполненную (за ...)")
@@ -460,10 +471,6 @@ async def add_to_execution(message: Message, state: FSMContext) -> None:
         "Плановые задачи:",
         reply_markup=kb,
     )
-    await message.answer(
-        "Для возврата:",
-        reply_markup=back_menu(),
-    )
     await state.clear()
 
 
@@ -476,6 +483,13 @@ async def add_completed_group_callback(callback: CallbackQuery) -> None:
         await callback.answer("Вы не состоите в семье.", show_alert=True)
         return
     runtime = TaskRuntimeRepository(db)
+    if token == "cancel":
+        try:
+            await callback.message.edit_text("Операция отменена.")
+        except TelegramBadRequest:
+            await callback.message.answer("Операция отменена.")
+        await callback.answer()
+        return
     if token in {"back", "none"}:
         kb = await _manual_done_root_keyboard(runtime, family_repo, ctx.family_id)
         try:
@@ -551,6 +565,13 @@ async def add_completed_for_member_group(callback: CallbackQuery) -> None:
         await callback.answer("Участник не найден.", show_alert=True)
         return
     runtime = TaskRuntimeRepository(db)
+    if group_token == "cancel":
+        try:
+            await callback.message.edit_text("Операция отменена.")
+        except TelegramBadRequest:
+            await callback.message.answer("Операция отменена.")
+        await callback.answer()
+        return
     if group_token in {"back", "none"}:
         kb = await _manual_done_for_member_root_keyboard(runtime, family_repo, ctx.family_id, target_user_id)
         try:
@@ -595,6 +616,13 @@ async def add_execution_group_callback(callback: CallbackQuery) -> None:
         await callback.answer("Нет прав", show_alert=True)
         return
     runtime = TaskRuntimeRepository(db)
+    if token == "cancel":
+        try:
+            await callback.message.edit_text("Операция отменена.")
+        except TelegramBadRequest:
+            await callback.message.answer("Операция отменена.")
+        await callback.answer()
+        return
     if token in {"back", "none"}:
         kb = await _add_execution_root_keyboard(runtime, family_repo, ctx.family_id)
         try:
@@ -716,6 +744,7 @@ async def _build_task_editor_payload(
     deps = await repo.list_dependencies(family_id, task_id)
     is_active = bool(task["is_active"])
     requires_comment = bool(task["requires_comment"])
+    effort_stars = max(1, min(5, int(task["effort_stars"])))
     state_text = "Активна" if is_active else "Неактивна"
     comment_text = "Да" if requires_comment else "Нет"
     group_text = str(task["group_name"] or "Без группы")
@@ -724,6 +753,7 @@ async def _build_task_editor_payload(
         f"Позиция в списке: {task['sort_order']}",
         f"Статус: {state_text}",
         f"Комментарий: {comment_text}",
+        f"Трудоемкость: {_stars_text(effort_stars)} ({effort_stars})",
         f"Группа: {group_text}",
         "Зависимости:",
     ]
@@ -743,6 +773,13 @@ async def _build_task_editor_payload(
                 text="Без комментария" if requires_comment else "С комментарием",
                 callback_data=f"editptcomment:{task_id}:{0 if requires_comment else 1}",
             )
+        ],
+        [
+            InlineKeyboardButton(
+                text=("✓ " if effort_stars == stars else "") + ("★" * stars),
+                callback_data=f"editpteffort:{task_id}:{stars}",
+            )
+            for stars in range(1, 6)
         ],
         [InlineKeyboardButton(text="Группа", callback_data=f"editptgroup:{task_id}")],
         [InlineKeyboardButton(text="Удалить", callback_data=f"editptdelask:{task_id}")],
@@ -899,6 +936,28 @@ async def edit_task_comment_toggle(callback: CallbackQuery) -> None:
         await callback.answer("Задача не найдена", show_alert=True)
         return
     await callback.answer("Режим комментария обновлен")
+
+
+@router.callback_query(F.data.startswith("editpteffort:"))
+async def edit_task_effort_stars(callback: CallbackQuery) -> None:
+    _, task_id_raw, stars_raw = callback.data.split(":")
+    task_id = int(task_id_raw)
+    target_stars = max(1, min(5, int(stars_raw)))
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if not can_edit_planned_tasks(ctx):
+        await callback.answer("Нет прав", show_alert=True)
+        return
+    repo = PlannedTaskRepository(db)
+    updated = await repo.set_task_effort_stars(ctx.family_id, task_id, target_stars)
+    if not updated:
+        await callback.answer("Задача не найдена", show_alert=True)
+        return
+    refreshed, _ = await _refresh_task_editor_message(callback.message, repo, ctx.family_id, task_id)
+    if not refreshed:
+        await callback.answer("Задача не найдена", show_alert=True)
+        return
+    await callback.answer(f"Трудоемкость обновлена: {target_stars}★")
 
 
 @router.callback_query(F.data.startswith("editpttitle:"))

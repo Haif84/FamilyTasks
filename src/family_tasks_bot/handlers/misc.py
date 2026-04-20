@@ -163,6 +163,7 @@ async def stats_current_week(message: Message) -> None:
     runtime = TaskRuntimeRepository(db)
     timezone_name = ctx.family_timezone or "UTC"
     by_user, active, scheduled, start_date, end_date = await runtime.stats_summary_current_week(ctx.family_id, timezone_name)
+    by_stars = await runtime.stats_stars_by_user_current_week(ctx.family_id, timezone_name)
     by_task, _, _ = await runtime.stats_by_task_type_current_week(ctx.family_id, timezone_name)
     lines = [
         f"Статистика за неделю ({start_date} - {end_date}):",
@@ -174,6 +175,10 @@ async def stats_current_week(message: Message) -> None:
             lines.append(f"- {row['display_name']}: {row['cnt']}")
     else:
         lines.append("Пока нет выполнений.")
+    if by_stars:
+        lines.append("Заработано звёзд по участникам:")
+        for row in by_stars:
+            lines.append(f"- {row['display_name']}: {row['stars']}")
     if by_task:
         lines.append("По типам задач:")
         for row in by_task[:10]:

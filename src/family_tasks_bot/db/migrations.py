@@ -38,6 +38,7 @@ async def run_migrations(conn: aiosqlite.Connection) -> None:
     await _migrate_groups_sort_order(conn)
     await _migrate_task_completions_history_fields(conn)
     await _migrate_task_comment_fields(conn)
+    await _migrate_task_effort_stars(conn)
     await conn.commit()
 
 
@@ -289,6 +290,32 @@ async def _migrate_task_comment_fields(conn: aiosqlite.Connection) -> None:
     if "comment_text" not in completion_col_names:
         await conn.execute("ALTER TABLE task_completions ADD COLUMN comment_text TEXT")
 
+    await conn.execute("INSERT INTO schema_migrations (id) VALUES (?)", (migration_id,))
+
+
+async def _migrate_task_effort_stars(conn: aiosqlite.Connection) -> None:
+    migration_id = "009_task_effort_stars"
+    async with conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ? LIMIT 1",
+        (migration_id,),
+    ) as cursor:
+        exists = await cursor.fetchone()
+    if exists is not None:
+        return
+
+    async with conn.execute("PRAGMA table_info(planned_tasks)") as cursor:
+        planned_task_columns = await cursor.fetchall()
+    planned_task_col_names = {str(col["name"]) for col in planned_task_columns}
+    if "effort_stars" not in planned_task_col_names:
+        await conn.execute("ALTER TABLE planned_tasks ADD COLUMN effort_stars INTEGER NOT NULL DEFAULT 1")
+
+    await conn.execute(
+        """
+        UPDATE planned_tasks
+        SET effort_stars = 1
+        WHERE effort_stars IS NULL OR effort_stars < 1 OR effort_stars > 5
+        """
+    )
     await conn.execute("INSERT INTO schema_migrations (id) VALUES (?)", (migration_id,))
 
 

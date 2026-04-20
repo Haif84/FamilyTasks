@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS planned_tasks (
     title TEXT NOT NULL,
     description TEXT,
     requires_comment INTEGER NOT NULL DEFAULT 0,
+    effort_stars INTEGER NOT NULL DEFAULT 1,
     sort_order INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER NOT NULL DEFAULT 1,
     created_by INTEGER NOT NULL,
