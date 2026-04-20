@@ -314,7 +314,12 @@ async def _send_task_editor(message: Message, repo: PlannedTaskRepository, famil
 
 
 async def _refresh_task_editor_message(
-    message: Message, repo: PlannedTaskRepository, family_id: int, task_id: int
+    message: Message,
+    repo: PlannedTaskRepository,
+    family_id: int,
+    task_id: int,
+    *,
+    allow_send_fallback: bool = True,
 ) -> tuple[bool, int | None]:
     payload = await _build_task_editor_payload(repo, family_id, task_id)
     if payload is None:
@@ -327,7 +332,13 @@ async def _refresh_task_editor_message(
         err = str(exc).lower()
         if "message is not modified" in err:
             pass
-        elif "message can't be edited" in err or "message to edit not found" in err or "there is no text in the message" in err:
+        elif (
+            "message can't be edited" in err
+            or "message to edit not found" in err
+            or "there is no text in the message" in err
+        ):
+            if not allow_send_fallback:
+                return (False, None)
             await message.answer(text, reply_markup=kb)
         else:
             raise
@@ -443,7 +454,14 @@ async def edit_task_room_start(callback: CallbackQuery) -> None:
     no_room_marker = "✓ " if task["room_id"] is None else ""
     rows.append([InlineKeyboardButton(text=f"{no_room_marker}Без комнаты", callback_data=f"setptroom:{task_id}:none")])
     rows.append([InlineKeyboardButton(text="Назад к задаче", callback_data=f"editpt:{task_id}")])
-    await callback.message.answer("Выберите комнату для задачи:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    try:
+        await callback.message.edit_text(
+            "Выберите комнату для задачи:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        )
+    except TelegramBadRequest as exc:
+        await callback.answer(f"Не удалось открыть выбор комнаты: {exc}", show_alert=True)
+        return
     await callback.answer()
 
 
@@ -462,8 +480,17 @@ async def edit_task_room_set(callback: CallbackQuery) -> None:
     if not updated:
         await callback.answer("Не удалось обновить комнату задачи", show_alert=True)
         return
+    refreshed, _ = await _refresh_task_editor_message(
+        callback.message,
+        repo,
+        ctx.family_id,
+        task_id,
+        allow_send_fallback=False,
+    )
+    if not refreshed:
+        await callback.answer("Комната обновлена, но не удалось изменить текущее сообщение", show_alert=True)
+        return
     await callback.answer("Комната задачи обновлена")
-    await _send_task_editor(callback.message, repo, ctx.family_id, task_id)
 
 
 @router.message(PlannedTaskStates.waiting_edit_title)

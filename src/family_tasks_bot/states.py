@@ -26,6 +26,11 @@ class RoomStates(StatesGroup):
     waiting_room_name_rename = State()
 
 
+class StatsStates(StatesGroup):
+    waiting_history_executor = State()
+    waiting_history_datetime = State()
+
+
 class NavStates(StatesGroup):
     in_family_menu = State()
     in_planned_tasks_menu = State()

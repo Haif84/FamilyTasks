@@ -16,7 +16,7 @@ def main_menu(is_admin: bool) -> ReplyKeyboardMarkup:
     labels.extend(["Добавить выполненную", "Отменить последнее выполнение"])
     if is_admin:
         labels.append("Добавить к выполнению")
-    labels.append("Прочее")
+    labels.extend(["Статистика", "Прочее"])
     rows = _rows_of_two(labels)
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
@@ -31,7 +31,6 @@ def back_menu() -> ReplyKeyboardMarkup:
 def misc_menu() -> ReplyKeyboardMarkup:
     rows = _rows_of_two(
         [
-            "Статистика",
             "Состав семьи",
             "Плановые задачи",
             "Комнаты",
@@ -45,14 +44,16 @@ def misc_menu() -> ReplyKeyboardMarkup:
     )
 
 
-def stats_menu() -> ReplyKeyboardMarkup:
-    rows = _rows_of_two(
-        [
-            "По члену семьи",
-            "По задаче",
-            "Назад",
-        ]
-    )
+def stats_menu(is_admin: bool) -> ReplyKeyboardMarkup:
+    labels = [
+        "По члену семьи",
+        "По задаче",
+        "Текущая неделя",
+    ]
+    if is_admin:
+        labels.append("Правка")
+    labels.append("Назад")
+    rows = _rows_of_two(labels)
     return ReplyKeyboardMarkup(
         keyboard=rows,
         resize_keyboard=True,

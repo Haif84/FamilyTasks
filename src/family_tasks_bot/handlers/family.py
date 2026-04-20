@@ -29,8 +29,10 @@ def _format_pending_invite(invite: dict) -> str:
 
 def _member_card_text(member: dict) -> str:
     telegram_id = member["tg_user_id"]
+    username = str(member["username"] or "").strip()
+    tg_label = f"@{username}" if username else "без username"
     return (
-        f"Участник: {member['display_name']} (Id: {telegram_id})\n"
+        f"Участник: {tg_label} (Id: {telegram_id})\n"
         f"Отображаемое имя: {member['display_name']}\n"
         "Выберите действие:"
     )

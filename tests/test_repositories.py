@@ -116,3 +116,39 @@ async def test_upsert_user_preserves_custom_display_name() -> None:
     assert row["username"] == "user_one_new"
     assert row["display_name"] == "Custom Name"
     await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_history_fields_and_edit_methods() -> None:
+    conn = await _init_db()
+    await conn.execute("INSERT INTO users (id, tg_user_id, username, display_name) VALUES (3, 1003, 'u3', 'User 3')")
+    await conn.execute(
+        "INSERT INTO family_members (family_id, user_id, role_type, is_admin, is_active) VALUES (1, 3, 'child', 0, 1)"
+    )
+    await conn.commit()
+
+    planned = PlannedTaskRepository(conn)
+    runtime = TaskRuntimeRepository(conn)
+    task_id = await planned.create_task(1, "Laundry", 1)
+    await runtime.add_manual_completion(1, task_id, 1)
+
+    rows = await runtime.list_recent_actions(1, 10, 0)
+    assert len(rows) == 1
+    entry = rows[0]
+    assert entry["added_at"] is not None
+    assert entry["history_updated_at"] is not None
+
+    completion_id = int(entry["completion_id"])
+    updated_executor = await runtime.update_completion_executor(1, completion_id, 3)
+    assert updated_executor is True
+
+    updated_time = await runtime.update_completion_datetime(1, completion_id, "2026-04-20 10:30:00")
+    assert updated_time is True
+
+    saved = await runtime.get_completion_entry(1, completion_id)
+    assert saved is not None
+    assert int(saved["member_user_id"]) == 3
+    assert str(saved["completed_at"]) == "2026-04-20 10:30:00"
+    assert saved["added_at"] is not None
+    assert saved["history_updated_at"] is not None
+    await conn.close()

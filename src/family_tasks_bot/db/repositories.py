@@ -765,8 +765,17 @@ class TaskRuntimeRepository:
         )
         cur = await self.conn.execute(
             """
-            INSERT INTO task_completions (task_instance_id, family_id, planned_task_id, completed_by, completion_mode)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO task_completions (
+                task_instance_id,
+                family_id,
+                planned_task_id,
+                completed_by,
+                completed_at,
+                added_at,
+                history_updated_at,
+                completion_mode
+            )
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)
             """,
             (instance_id, row["family_id"], row["planned_task_id"], user_id, mode),
         )
@@ -784,8 +793,17 @@ class TaskRuntimeRepository:
     async def add_manual_completion(self, family_id: int, planned_task_id: int, user_id: int) -> int:
         cur = await self.conn.execute(
             """
-            INSERT INTO task_completions (task_instance_id, family_id, planned_task_id, completed_by, completion_mode)
-            VALUES (NULL, ?, ?, ?, 'manual')
+            INSERT INTO task_completions (
+                task_instance_id,
+                family_id,
+                planned_task_id,
+                completed_by,
+                completed_at,
+                added_at,
+                history_updated_at,
+                completion_mode
+            )
+            VALUES (NULL, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'manual')
             """,
             (family_id, planned_task_id, user_id),
         )
@@ -858,6 +876,70 @@ class TaskRuntimeRepository:
         since_local = local_day_start - timedelta(days=max(period_days - 1, 0))
         since_utc = since_local.astimezone(timezone.utc)
         return since_utc.strftime("%Y-%m-%d %H:%M:%S")
+
+    def _current_week_since_utc(self, timezone_name: str) -> tuple[str, str, str]:
+        try:
+            tz = ZoneInfo(timezone_name)
+        except Exception:
+            tz = FALLBACK_TIMEZONES.get(timezone_name, timezone.utc)
+        now_local = datetime.now(timezone.utc).astimezone(tz)
+        week_start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+            days=now_local.weekday()
+        )
+        week_start_utc = week_start_local.astimezone(timezone.utc)
+        return (
+            week_start_utc.strftime("%Y-%m-%d %H:%M:%S"),
+            week_start_local.strftime("%Y-%m-%d"),
+            now_local.strftime("%Y-%m-%d"),
+        )
+
+    async def stats_summary_current_week(
+        self, family_id: int, timezone_name: str = "UTC"
+    ) -> tuple[list[aiosqlite.Row], int, int, str, str]:
+        since_utc, start_local_date, end_local_date = self._current_week_since_utc(timezone_name)
+        async with self.conn.execute(
+            """
+            SELECT u.display_name, COUNT(*) AS cnt
+            FROM task_completions tc
+            JOIN users u ON u.id = tc.completed_by
+            WHERE tc.family_id = ?
+              AND datetime(tc.completed_at) >= datetime(?)
+            GROUP BY u.id, u.display_name
+            ORDER BY cnt DESC
+            """,
+            (family_id, since_utc),
+        ) as cursor:
+            by_user = await cursor.fetchall()
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM task_instances WHERE family_id = ? AND status = 'pending'",
+            (family_id,),
+        ) as cursor:
+            active = int((await cursor.fetchone())["cnt"])
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM task_instances WHERE family_id = ? AND status = 'scheduled'",
+            (family_id,),
+        ) as cursor:
+            scheduled = int((await cursor.fetchone())["cnt"])
+        return by_user, active, scheduled, start_local_date, end_local_date
+
+    async def stats_by_task_type_current_week(
+        self, family_id: int, timezone_name: str = "UTC"
+    ) -> tuple[list[aiosqlite.Row], str, str]:
+        since_utc, start_local_date, end_local_date = self._current_week_since_utc(timezone_name)
+        async with self.conn.execute(
+            """
+            SELECT pt.title, COUNT(*) AS cnt
+            FROM task_completions tc
+            JOIN planned_tasks pt ON pt.id = tc.planned_task_id
+            WHERE tc.family_id = ?
+              AND datetime(tc.completed_at) >= datetime(?)
+            GROUP BY pt.id, pt.title
+            ORDER BY cnt DESC, pt.title
+            """,
+            (family_id, since_utc),
+        ) as cursor:
+            by_task = await cursor.fetchall()
+        return by_task, start_local_date, end_local_date
 
     async def stats_summary(
         self, family_id: int, period_days: int, timezone_name: str = "UTC"
@@ -934,6 +1016,92 @@ class TaskRuntimeRepository:
             (family_id, task_id, limit, offset),
         ) as cursor:
             return await cursor.fetchall()
+
+    async def list_recent_actions(self, family_id: int, limit: int, offset: int = 0) -> list[aiosqlite.Row]:
+        async with self.conn.execute(
+            """
+            SELECT
+                tc.id AS completion_id,
+                tc.completed_at,
+                tc.added_at,
+                tc.history_updated_at,
+                tc.completed_by AS member_user_id,
+                u.display_name AS member_display_name,
+                pt.title AS task_title,
+                tc.completion_mode
+            FROM task_completions tc
+            JOIN users u ON u.id = tc.completed_by
+            JOIN planned_tasks pt ON pt.id = tc.planned_task_id
+            WHERE tc.family_id = ?
+            ORDER BY tc.completed_at DESC, tc.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (family_id, limit, offset),
+        ) as cursor:
+            return await cursor.fetchall()
+
+    async def get_completion_entry(self, family_id: int, completion_id: int) -> aiosqlite.Row | None:
+        async with self.conn.execute(
+            """
+            SELECT
+                tc.id AS completion_id,
+                tc.task_instance_id,
+                tc.family_id,
+                tc.planned_task_id,
+                tc.completed_by AS member_user_id,
+                tc.completed_at,
+                tc.added_at,
+                tc.history_updated_at,
+                tc.completion_mode,
+                pt.title AS task_title,
+                u.display_name AS member_display_name
+            FROM task_completions tc
+            JOIN users u ON u.id = tc.completed_by
+            JOIN planned_tasks pt ON pt.id = tc.planned_task_id
+            WHERE tc.family_id = ? AND tc.id = ?
+            LIMIT 1
+            """,
+            (family_id, completion_id),
+        ) as cursor:
+            return await cursor.fetchone()
+
+    async def update_completion_executor(self, family_id: int, completion_id: int, new_user_id: int) -> bool:
+        async with self.conn.execute(
+            """
+            SELECT 1
+            FROM family_members
+            WHERE family_id = ? AND user_id = ? AND is_active = 1
+            LIMIT 1
+            """,
+            (family_id, new_user_id),
+        ) as cursor:
+            member_exists = await cursor.fetchone()
+        if member_exists is None:
+            return False
+        cur = await self.conn.execute(
+            """
+            UPDATE task_completions
+            SET completed_by = ?, history_updated_at = CURRENT_TIMESTAMP
+            WHERE family_id = ? AND id = ?
+            """,
+            (new_user_id, family_id, completion_id),
+        )
+        await self.conn.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def update_completion_datetime(
+        self, family_id: int, completion_id: int, new_completed_at_utc: str
+    ) -> bool:
+        cur = await self.conn.execute(
+            """
+            UPDATE task_completions
+            SET completed_at = ?, history_updated_at = CURRENT_TIMESTAMP
+            WHERE family_id = ? AND id = ?
+            """,
+            (new_completed_at_utc, family_id, completion_id),
+        )
+        await self.conn.commit()
+        return (cur.rowcount or 0) > 0
 
     async def activate_due_scheduled(self) -> list[aiosqlite.Row]:
         now_iso = datetime.now(timezone.utc).isoformat()

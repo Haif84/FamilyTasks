@@ -34,6 +34,7 @@ async def run_migrations(conn: aiosqlite.Connection) -> None:
         )
     await _migrate_planned_tasks_sort_order(conn)
     await _migrate_rooms_and_task_room(conn)
+    await _migrate_task_completions_history_fields(conn)
     await conn.commit()
 
 
@@ -109,6 +110,40 @@ async def _migrate_rooms_and_task_room(conn: aiosqlite.Connection) -> None:
     )
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_planned_tasks_family_room_sort ON planned_tasks(family_id, room_id, sort_order)"
+    )
+    await conn.execute("INSERT INTO schema_migrations (id) VALUES (?)", (migration_id,))
+
+
+async def _migrate_task_completions_history_fields(conn: aiosqlite.Connection) -> None:
+    migration_id = "005_task_completions_history_fields"
+    async with conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ? LIMIT 1",
+        (migration_id,),
+    ) as cursor:
+        exists = await cursor.fetchone()
+    if exists is not None:
+        return
+
+    async with conn.execute("PRAGMA table_info(task_completions)") as cursor:
+        columns = await cursor.fetchall()
+    col_names = {str(col["name"]) for col in columns}
+
+    if "added_at" not in col_names:
+        await conn.execute("ALTER TABLE task_completions ADD COLUMN added_at TEXT")
+    if "history_updated_at" not in col_names:
+        await conn.execute("ALTER TABLE task_completions ADD COLUMN history_updated_at TEXT")
+
+    await conn.execute(
+        """
+        UPDATE task_completions
+        SET added_at = COALESCE(NULLIF(added_at, ''), completed_at, CURRENT_TIMESTAMP)
+        """
+    )
+    await conn.execute(
+        """
+        UPDATE task_completions
+        SET history_updated_at = COALESCE(NULLIF(history_updated_at, ''), CURRENT_TIMESTAMP)
+        """
     )
     await conn.execute("INSERT INTO schema_migrations (id) VALUES (?)", (migration_id,))
 

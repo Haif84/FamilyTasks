@@ -12,13 +12,14 @@ from family_tasks_bot.deps import get_repositories
 from family_tasks_bot.db.repositories import NotificationRepository, PlannedTaskRepository, TaskRuntimeRepository
 from family_tasks_bot.keyboards.reply import main_menu, misc_menu, rooms_menu, stats_menu
 from family_tasks_bot.services.bootstrap import ensure_member_context
-from family_tasks_bot.states import NavStates, RoomStates
+from family_tasks_bot.states import NavStates, RoomStates, StatsStates
 from family_tasks_bot.version import APP_VERSION
 
 router = Router(name="misc")
 QUIET_RE = re.compile(r"^/quiet\s+(\d{2}:\d{2})-(\d{2}:\d{2})(?:\s+(all|[0-6]))?$")
 STATS_RE = re.compile(r"^/stats(?:\s+(day|week|month))?$")
 PAGE_SIZE = 10
+HISTORY_LIMIT = 10
 
 
 def _family_tzinfo(timezone_name: str) -> ZoneInfo | timezone:
@@ -44,6 +45,37 @@ def _to_family_local_timestamp(raw_value: str, timezone_name: str) -> str:
         parsed = parsed.replace(tzinfo=timezone.utc)
     local = parsed.astimezone(_family_tzinfo(timezone_name))
     return local.strftime("%Y-%m-%d %H:%M")
+
+
+def _format_action_label(task_title: str, completion_mode: str) -> str:
+    return f"{task_title} [{completion_mode}]"
+
+
+def _history_line(entry: dict, timezone_name: str) -> str:
+    local_completed_at = _to_family_local_timestamp(str(entry["completed_at"]), timezone_name)
+    action = _format_action_label(str(entry["task_title"]), str(entry["completion_mode"]))
+    return f"- {local_completed_at} | {action} | {entry['member_display_name']}"
+
+
+def _history_button_label(entry: dict, timezone_name: str) -> str:
+    local_completed_at = _to_family_local_timestamp(str(entry["completed_at"]), timezone_name)
+    action = _format_action_label(str(entry["task_title"]), str(entry["completion_mode"]))
+    label = f"{local_completed_at} | {action} | {entry['member_display_name']}"
+    if len(label) > 60:
+        return f"{label[:57]}..."
+    return label
+
+
+def _parse_local_datetime_to_utc(value: str, timezone_name: str) -> str | None:
+    raw = (value or "").strip()
+    try:
+        local_naive = datetime.strptime(raw, "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+    tzinfo = _family_tzinfo(timezone_name)
+    local_dt = local_naive.replace(tzinfo=tzinfo)
+    utc_dt = local_dt.astimezone(timezone.utc)
+    return utc_dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _rooms_editor_keyboard(rooms: list) -> InlineKeyboardMarkup:
@@ -107,8 +139,46 @@ async def edit_rooms_open(message: Message) -> None:
 
 @router.message(F.text == "Статистика")
 async def statistics(message: Message, state: FSMContext) -> None:
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+    if ctx.family_id is None:
+        await message.answer("Вы пока не добавлены в семью.")
+        return
     await state.set_state(NavStates.in_stats_menu)
-    await _send_stats(message, "week", reply_markup=stats_menu())
+    runtime = TaskRuntimeRepository(db)
+    timezone_name = ctx.family_timezone or "UTC"
+    await _send_recent_actions(message, runtime, ctx.family_id, timezone_name)
+    await message.answer("Меню статистики:", reply_markup=stats_menu(is_admin=ctx.is_admin))
+
+
+@router.message(NavStates.in_stats_menu, F.text == "Текущая неделя")
+async def stats_current_week(message: Message) -> None:
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+    if ctx.family_id is None:
+        await message.answer("Вы пока не добавлены в семью.")
+        return
+    runtime = TaskRuntimeRepository(db)
+    timezone_name = ctx.family_timezone or "UTC"
+    by_user, active, scheduled, start_date, end_date = await runtime.stats_summary_current_week(ctx.family_id, timezone_name)
+    by_task, _, _ = await runtime.stats_by_task_type_current_week(ctx.family_id, timezone_name)
+    lines = [
+        f"Статистика за неделю ({start_date} - {end_date}):",
+        f"Часовой пояс семьи: {timezone_name}",
+    ]
+    if by_user:
+        lines.append("Выполнено по участникам:")
+        for row in by_user:
+            lines.append(f"- {row['display_name']}: {row['cnt']}")
+    else:
+        lines.append("Пока нет выполнений.")
+    if by_task:
+        lines.append("По типам задач:")
+        for row in by_task[:10]:
+            lines.append(f"- {row['title']}: {row['cnt']}")
+    lines.append(f"Активные задачи: {active}")
+    lines.append(f"Запланированные задачи: {scheduled}")
+    await message.answer("\n".join(lines), reply_markup=stats_menu(is_admin=ctx.is_admin))
 
 
 @router.message(NavStates.in_stats_menu, F.text == "По члену семьи")
@@ -193,6 +263,19 @@ async def _send_stats(message: Message, period: str, reply_markup: ReplyKeyboard
     lines.append(f"Активные задачи: {active}")
     lines.append(f"Запланированные задачи: {scheduled}")
     await message.answer("\n".join(lines), reply_markup=reply_markup)
+
+
+async def _send_recent_actions(
+    message: Message, runtime: TaskRuntimeRepository, family_id: int, timezone_name: str
+) -> None:
+    rows = await runtime.list_recent_actions(family_id, HISTORY_LIMIT, 0)
+    lines = ["Последние 10 действий:"]
+    if not rows:
+        lines.append("История пока пуста.")
+    else:
+        for row in rows:
+            lines.append(_history_line(row, timezone_name))
+    await message.answer("\n".join(lines))
 
 
 async def _render_member_actions(
@@ -281,6 +364,240 @@ async def stats_task_callback(callback: CallbackQuery) -> None:
     timezone_name = ctx.family_timezone or "UTC"
     await _render_task_actions(callback, ctx.family_id, task_id, offset, runtime, timezone_name)
     await callback.answer()
+
+
+def _history_edit_list_keyboard(rows: list, timezone_name: str) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text=_history_button_label(row, timezone_name), callback_data=f"histedit:{row['completion_id']}")]
+        for row in rows
+    ]
+    return InlineKeyboardMarkup(
+        inline_keyboard=buttons or [[InlineKeyboardButton(text="История пуста", callback_data="noop")]]
+    )
+
+
+def _history_card_text(entry: dict, timezone_name: str) -> str:
+    local_completed_at = _to_family_local_timestamp(str(entry["completed_at"]), timezone_name)
+    local_added_at = _to_family_local_timestamp(str(entry["added_at"]), timezone_name)
+    local_updated_at = _to_family_local_timestamp(str(entry["history_updated_at"]), timezone_name)
+    action = _format_action_label(str(entry["task_title"]), str(entry["completion_mode"]))
+    return (
+        f"Запись истории #{entry['completion_id']}\n"
+        f"Действие: {action}\n"
+        f"Исполнитель: {entry['member_display_name']}\n"
+        f"Дата/Время действия: {local_completed_at}\n"
+        f"Дата/Время добавления действия: {local_added_at}\n"
+        f"Дата/Время изменения истории: {local_updated_at}"
+    )
+
+
+@router.message(NavStates.in_stats_menu, F.text == "Правка")
+async def stats_history_edit_menu(message: Message) -> None:
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+    if ctx.family_id is None:
+        await message.answer("Вы пока не добавлены в семью.")
+        return
+    if not ctx.is_admin:
+        await message.answer("Правка истории доступна только администраторам.")
+        return
+    runtime = TaskRuntimeRepository(db)
+    timezone_name = ctx.family_timezone or "UTC"
+    rows = await runtime.list_recent_actions(ctx.family_id, HISTORY_LIMIT, 0)
+    await message.answer(
+        "Выберите запись истории для правки:",
+        reply_markup=_history_edit_list_keyboard(rows, timezone_name),
+    )
+
+
+@router.callback_query(F.data == "histeditback")
+async def stats_history_edit_back(callback: CallbackQuery) -> None:
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    if not ctx.is_admin:
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+    runtime = TaskRuntimeRepository(db)
+    timezone_name = ctx.family_timezone or "UTC"
+    rows = await runtime.list_recent_actions(ctx.family_id, HISTORY_LIMIT, 0)
+    await callback.message.answer(
+        "Выберите запись истории для правки:",
+        reply_markup=_history_edit_list_keyboard(rows, timezone_name),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("histedit:"))
+async def stats_history_edit_entry(callback: CallbackQuery) -> None:
+    completion_id = int(callback.data.split(":")[1])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    if not ctx.is_admin:
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+    runtime = TaskRuntimeRepository(db)
+    entry = await runtime.get_completion_entry(ctx.family_id, completion_id)
+    if entry is None:
+        await callback.answer("Запись не найдена.", show_alert=True)
+        return
+    timezone_name = ctx.family_timezone or "UTC"
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Исполнитель", callback_data=f"histeditexec:{completion_id}")],
+            [InlineKeyboardButton(text="Дата/время", callback_data=f"histedittime:{completion_id}")],
+            [InlineKeyboardButton(text="Назад", callback_data="histeditback")],
+        ]
+    )
+    await callback.message.answer(_history_card_text(entry, timezone_name), reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("histeditexec:"))
+async def stats_history_edit_executor_start(callback: CallbackQuery, state: FSMContext) -> None:
+    completion_id = int(callback.data.split(":")[1])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    if not ctx.is_admin:
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+    entry = await TaskRuntimeRepository(db).get_completion_entry(ctx.family_id, completion_id)
+    if entry is None:
+        await callback.answer("Запись не найдена.", show_alert=True)
+        return
+    members = await family_repo.list_members_for_edit(ctx.family_id)
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text=str(member["display_name"]),
+                callback_data=f"histeditexecsel:{completion_id}:{member['user_id']}",
+            )
+        ]
+        for member in members
+    ]
+    buttons.append([InlineKeyboardButton(text="Назад", callback_data=f"histedit:{completion_id}")])
+    await state.set_state(StatsStates.waiting_history_executor)
+    await state.update_data(history_completion_id=completion_id)
+    await callback.message.answer(
+        "Выберите нового исполнителя:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("histeditexecsel:"))
+async def stats_history_edit_executor_save(callback: CallbackQuery, state: FSMContext) -> None:
+    _, completion_raw, user_raw = callback.data.split(":")
+    completion_id = int(completion_raw)
+    new_user_id = int(user_raw)
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    if not ctx.is_admin:
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+    runtime = TaskRuntimeRepository(db)
+    updated = await runtime.update_completion_executor(ctx.family_id, completion_id, new_user_id)
+    if not updated:
+        await callback.answer("Не удалось изменить исполнителя.", show_alert=True)
+        return
+    entry = await runtime.get_completion_entry(ctx.family_id, completion_id)
+    await state.clear()
+    if entry is not None:
+        timezone_name = ctx.family_timezone or "UTC"
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Исполнитель", callback_data=f"histeditexec:{completion_id}")],
+                [InlineKeyboardButton(text="Дата/время", callback_data=f"histedittime:{completion_id}")],
+                [InlineKeyboardButton(text="Назад", callback_data="histeditback")],
+            ]
+        )
+        await callback.message.answer(_history_card_text(entry, timezone_name), reply_markup=kb)
+    await callback.answer("Исполнитель обновлен.")
+
+
+@router.callback_query(F.data.startswith("histedittime:"))
+async def stats_history_edit_time_start(callback: CallbackQuery, state: FSMContext) -> None:
+    completion_id = int(callback.data.split(":")[1])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    if not ctx.is_admin:
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+    entry = await TaskRuntimeRepository(db).get_completion_entry(ctx.family_id, completion_id)
+    if entry is None:
+        await callback.answer("Запись не найдена.", show_alert=True)
+        return
+    timezone_name = ctx.family_timezone or "UTC"
+    current_local = _to_family_local_timestamp(str(entry["completed_at"]), timezone_name)
+    await state.set_state(StatsStates.waiting_history_datetime)
+    await state.update_data(history_completion_id=completion_id)
+    await callback.message.answer(
+        f"Текущее время действия: {current_local}\nВведите новое время в формате YYYY-MM-DD HH:MM:"
+    )
+    await callback.answer()
+
+
+@router.message(StatsStates.waiting_history_datetime)
+async def stats_history_edit_time_save(message: Message, state: FSMContext) -> None:
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+    if ctx.family_id is None:
+        await state.clear()
+        await message.answer("Вы пока не добавлены в семью.")
+        return
+    if not ctx.is_admin:
+        await state.clear()
+        await message.answer("Эта команда доступна только администраторам.")
+        return
+    raw_value = (message.text or "").strip()
+    timezone_name = ctx.family_timezone or "UTC"
+    new_completed_at = _parse_local_datetime_to_utc(raw_value, timezone_name)
+    if new_completed_at is None:
+        await message.answer("Некорректный формат. Используйте YYYY-MM-DD HH:MM")
+        return
+    data = await state.get_data()
+    completion_id = int(data.get("history_completion_id", 0))
+    if completion_id <= 0:
+        await state.clear()
+        await message.answer("Не удалось определить запись истории.")
+        return
+    runtime = TaskRuntimeRepository(db)
+    updated = await runtime.update_completion_datetime(ctx.family_id, completion_id, new_completed_at)
+    if not updated:
+        await state.clear()
+        await message.answer("Не удалось обновить время действия.")
+        return
+    entry = await runtime.get_completion_entry(ctx.family_id, completion_id)
+    await state.clear()
+    await message.answer("Время действия обновлено.")
+    if entry is not None:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Исполнитель", callback_data=f"histeditexec:{completion_id}")],
+                [InlineKeyboardButton(text="Дата/время", callback_data=f"histedittime:{completion_id}")],
+                [InlineKeyboardButton(text="Назад", callback_data="histeditback")],
+            ]
+        )
+        await message.answer(_history_card_text(entry, timezone_name), reply_markup=kb)
+
+
+@router.message(StatsStates.waiting_history_executor)
+async def stats_history_executor_waiting_hint(message: Message) -> None:
+    await message.answer("Выберите исполнителя кнопкой из списка ниже.")
 
 
 @router.callback_query(F.data == "roomadd")

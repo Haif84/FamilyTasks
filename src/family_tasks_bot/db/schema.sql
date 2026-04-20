@@ -128,6 +128,8 @@ CREATE TABLE IF NOT EXISTS task_completions (
     planned_task_id INTEGER NOT NULL,
     completed_by INTEGER NOT NULL,
     completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    history_updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completion_mode TEXT NOT NULL CHECK(completion_mode IN ('current', 'manual')),
     FOREIGN KEY (task_instance_id) REFERENCES task_instances(id) ON DELETE SET NULL,
     FOREIGN KEY (family_id) REFERENCES families(id) ON DELETE CASCADE,
