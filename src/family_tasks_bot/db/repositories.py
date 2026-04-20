@@ -24,7 +24,10 @@ class UserRepository:
             VALUES (?, ?, ?)
             ON CONFLICT(tg_user_id) DO UPDATE SET
                 username = excluded.username,
-                display_name = excluded.display_name
+                display_name = CASE
+                    WHEN users.display_name IS NULL OR trim(users.display_name) = '' THEN excluded.display_name
+                    ELSE users.display_name
+                END
             """,
             (tg_user_id, username, display_name),
         )

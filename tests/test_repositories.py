@@ -6,7 +6,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from family_tasks_bot.db.repositories import PlannedTaskRepository, TaskRuntimeRepository
+from family_tasks_bot.db.repositories import PlannedTaskRepository, TaskRuntimeRepository, UserRepository
 
 
 async def _init_db() -> aiosqlite.Connection:
@@ -96,4 +96,23 @@ async def test_stats_timezone_boundary_respected() -> None:
     by_user_moscow, _, _ = await runtime.stats_summary(1, 1, "Europe/Moscow")
     assert len(by_user_moscow) == 1
     assert int(by_user_moscow[0]["cnt"]) == 1
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_upsert_user_preserves_custom_display_name() -> None:
+    conn = await _init_db()
+    users = UserRepository(conn)
+    user_id = await users.upsert_user(999001, "user_one", "First Name")
+    assert user_id > 0
+
+    await conn.execute("UPDATE users SET display_name = ? WHERE id = ?", ("Custom Name", user_id))
+    await conn.commit()
+
+    await users.upsert_user(999001, "user_one_new", "Telegram Name")
+    async with conn.execute("SELECT username, display_name FROM users WHERE id = ?", (user_id,)) as cursor:
+        row = await cursor.fetchone()
+    assert row is not None
+    assert row["username"] == "user_one_new"
+    assert row["display_name"] == "Custom Name"
     await conn.close()
