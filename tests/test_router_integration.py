@@ -132,3 +132,18 @@ async def test_invite_by_telegram_id_accepted_on_start() -> None:
 
     await conn.close()
     await bot.session.close()
+
+
+@pytest.mark.asyncio
+async def test_alice_link_command_returns_code() -> None:
+    conn = await _bootstrap_db()
+    bot = StubBot()
+    token = install_deps(conn, UserRepository, FamilyRepository)
+    try:
+        await DP.feed_update(bot, _make_message_update(4, 5001, "/start", "alice_link_user"))
+        await DP.feed_update(bot, _make_message_update(5, 5001, "/alice_link", "alice_link_user"))
+    finally:
+        reset_deps(token)
+    assert any("Код привязки Алисы:" in msg for msg in bot.sent_texts)
+    await conn.close()
+    await bot.session.close()

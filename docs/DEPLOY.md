@@ -45,6 +45,17 @@ nano .env   # BOT_TOKEN, при необходимости DB_PATH, LOG_LEVEL
 
 Для контейнера по умолчанию `DB_PATH=/app/data/family_tasks.sqlite3` (см. `docker-compose.yml`); база попадёт в Docker volume `bot_data`.
 
+Если включаете интеграцию Алисы, добавьте в `.env`:
+
+```env
+ALICE_WEBHOOK_ENABLED=true
+ALICE_WEBHOOK_HOST=0.0.0.0
+ALICE_WEBHOOK_PORT=8080
+ALICE_WEBHOOK_PATH=/alice/webhook
+```
+
+Далее настройте публичный HTTPS reverse proxy до этого endpoint (подробно: [docs/ALICE_INTEGRATION.md](ALICE_INTEGRATION.md)).
+
 4. Первый запуск вручную:
 
 ```bash

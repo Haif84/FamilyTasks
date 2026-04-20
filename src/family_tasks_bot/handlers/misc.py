@@ -95,6 +95,31 @@ async def open_misc(message: Message) -> None:
     await message.answer("Раздел Прочее", reply_markup=misc_menu(is_admin=ctx.is_admin))
 
 
+async def _send_alice_link_code(message: Message) -> None:
+    _, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+    if ctx.family_id is None:
+        await message.answer("Вы пока не добавлены в семью.")
+        return
+    code = await user_repo.create_alice_link_code(ctx.family_id, ctx.user_id, ttl_minutes=10)
+    await message.answer(
+        "Код привязки Алисы: "
+        f"{code}\n"
+        "Срок действия: 10 минут.\n"
+        "Скажите в навыке Алисы этот код для привязки."
+    )
+
+
+@router.message(F.text == "Код для Алисы")
+async def alice_link_code_from_button(message: Message) -> None:
+    await _send_alice_link_code(message)
+
+
+@router.message(F.text.regexp(r"^/alice_link$"))
+async def alice_link_code_from_command(message: Message) -> None:
+    await _send_alice_link_code(message)
+
+
 @router.message(F.text == "Группы")
 async def open_groups(message: Message, state: FSMContext) -> None:
     _, user_repo, family_repo = get_repositories()

@@ -39,6 +39,7 @@ async def run_migrations(conn: aiosqlite.Connection) -> None:
     await _migrate_task_completions_history_fields(conn)
     await _migrate_task_comment_fields(conn)
     await _migrate_task_effort_stars(conn)
+    await _migrate_alice_linking(conn)
     await conn.commit()
 
 
@@ -315,6 +316,54 @@ async def _migrate_task_effort_stars(conn: aiosqlite.Connection) -> None:
         SET effort_stars = 1
         WHERE effort_stars IS NULL OR effort_stars < 1 OR effort_stars > 5
         """
+    )
+    await conn.execute("INSERT INTO schema_migrations (id) VALUES (?)", (migration_id,))
+
+
+async def _migrate_alice_linking(conn: aiosqlite.Connection) -> None:
+    migration_id = "010_alice_linking"
+    async with conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ? LIMIT 1",
+        (migration_id,),
+    ) as cursor:
+        exists = await cursor.fetchone()
+    if exists is not None:
+        return
+
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS alice_user_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            alice_user_id TEXT NOT NULL UNIQUE,
+            family_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (family_id) REFERENCES families(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """
+    )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS alice_link_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT NOT NULL UNIQUE,
+            family_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            expires_at TEXT NOT NULL,
+            used_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (family_id) REFERENCES families(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_alice_user_links_family_user ON alice_user_links(family_id, user_id)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_alice_link_codes_user_expires ON alice_link_codes(user_id, expires_at)"
     )
     await conn.execute("INSERT INTO schema_migrations (id) VALUES (?)", (migration_id,))
 

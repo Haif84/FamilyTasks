@@ -11,6 +11,17 @@ Telegram bot on `aiogram 3.x` + `SQLite` for family household task tracking.
 4. Run:
    - `python -m family_tasks_bot.main`
 
+### Alice webhook (.env example)
+
+```env
+ALICE_WEBHOOK_ENABLED=true
+ALICE_WEBHOOK_HOST=0.0.0.0
+ALICE_WEBHOOK_PORT=8080
+ALICE_WEBHOOK_PATH=/alice/webhook
+```
+
+Полная инструкция по подключению и настройке: [docs/ALICE_INTEGRATION.md](docs/ALICE_INTEGRATION.md).
+
 ## MVP commands and flows
 
 - `/start` - onboarding and role-aware menu.
@@ -57,6 +68,8 @@ Telegram bot on `aiogram 3.x` + `SQLite` for family household task tracking.
   - по push тега вида `v*` (например `v1.0.0`).
 
 Пошаговая инструкция по VPS, секретам и первому запуску: [docs/DEPLOY.md](docs/DEPLOY.md).
+
+Интеграция с Яндекс.Алисой (включая чек-лист публичного HTTPS webhook): [docs/ALICE_INTEGRATION.md](docs/ALICE_INTEGRATION.md).
 
 Первый коммит и создание репозитория **FamilyTasks** на GitHub (локально, с вашей авторизацией): [docs/GITHUB_FIRST_PUSH.md](docs/GITHUB_FIRST_PUSH.md) и скрипт [`scripts/first-push-github.ps1`](scripts/first-push-github.ps1).
 

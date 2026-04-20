@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     bot_token: str
     db_path: str = "./data/family_tasks.sqlite3"
     log_level: str = "INFO"
+    alice_webhook_enabled: bool = False
+    alice_webhook_host: str = "0.0.0.0"
+    alice_webhook_port: int = 8080
+    alice_webhook_path: str = "/alice/webhook"
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -21,7 +25,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    @field_validator("bot_token", "db_path", "log_level", mode="before")
+    @field_validator("bot_token", "db_path", "log_level", "alice_webhook_host", "alice_webhook_path", mode="before")
     @classmethod
     def strip_crlf_and_bom(cls, v: object) -> object:
         """Windows CRLF / UTF-8 BOM in .env break Docker env_file and Telegram auth."""

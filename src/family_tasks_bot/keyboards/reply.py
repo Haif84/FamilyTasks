@@ -33,6 +33,7 @@ def misc_menu(is_admin: bool) -> ReplyKeyboardMarkup:
         "Состав семьи",
         "Плановые задачи",
         "Группы",
+        "Код для Алисы",
     ]
     if is_admin:
         labels.append("Добавить выполненную (за ...)")

@@ -274,3 +274,39 @@ async def test_task_requires_comment_toggle_and_manual_comment_saved() -> None:
     assert undo_row is not None
     assert int(undo_row["user_id"]) == 1
     await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_alice_link_code_can_be_consumed_once() -> None:
+    conn = await _init_db()
+    users = UserRepository(conn)
+    code = await users.create_alice_link_code(1, 1, ttl_minutes=10)
+    assert len(code) == 6
+
+    consumed = await users.consume_alice_link_code(code)
+    assert consumed is not None
+    assert int(consumed["family_id"]) == 1
+    assert int(consumed["user_id"]) == 1
+
+    consumed_again = await users.consume_alice_link_code(code)
+    assert consumed_again is None
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_alice_link_and_task_search_by_phrase() -> None:
+    conn = await _init_db()
+    users = UserRepository(conn)
+    planned = PlannedTaskRepository(conn)
+    task_id = await planned.create_task(1, "Помыть посуду", 1)
+    await users.upsert_alice_user_link("alice-user-1", 1, 1)
+
+    link = await users.get_alice_user_link("alice-user-1")
+    assert link is not None
+    assert int(link["family_id"]) == 1
+    assert int(link["user_id"]) == 1
+
+    matches = await planned.search_active_tasks_by_phrase(1, "посуд")
+    assert len(matches) >= 1
+    assert any(int(row["id"]) == task_id for row in matches)
+    await conn.close()

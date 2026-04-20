@@ -154,6 +154,29 @@ CREATE TABLE IF NOT EXISTS undo_log (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS alice_user_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alice_user_id TEXT NOT NULL UNIQUE,
+    family_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (family_id) REFERENCES families(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS alice_link_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    family_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (family_id) REFERENCES families(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS notification_quiet_hours (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     family_id INTEGER NOT NULL,
@@ -192,3 +215,9 @@ CREATE INDEX IF NOT EXISTS idx_task_instances_family_due
 
 CREATE INDEX IF NOT EXISTS idx_task_completions_family_completed_at
     ON task_completions(family_id, completed_at);
+
+CREATE INDEX IF NOT EXISTS idx_alice_user_links_family_user
+    ON alice_user_links(family_id, user_id);
+
+CREATE INDEX IF NOT EXISTS idx_alice_link_codes_user_expires
+    ON alice_link_codes(user_id, expires_at);

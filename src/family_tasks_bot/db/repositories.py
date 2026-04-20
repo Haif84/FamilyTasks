@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -101,6 +102,85 @@ class UserRepository:
         async with self.conn.execute("SELECT COUNT(*) AS cnt FROM users") as cursor:
             row = await cursor.fetchone()
         return int(row["cnt"]) == 0
+
+    async def create_alice_link_code(self, family_id: int, user_id: int, *, ttl_minutes: int = 10) -> str:
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=max(ttl_minutes, 1))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        for _ in range(10):
+            code = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
+            try:
+                await self.conn.execute(
+                    """
+                    INSERT INTO alice_link_codes (code, family_id, user_id, expires_at, used_at)
+                    VALUES (?, ?, ?, ?, NULL)
+                    """,
+                    (code, family_id, user_id, expires_at),
+                )
+                await self.conn.commit()
+                return code
+            except aiosqlite.IntegrityError:
+                continue
+        raise RuntimeError("Failed to generate unique Alice link code")
+
+    async def consume_alice_link_code(self, code: str) -> aiosqlite.Row | None:
+        normalized = (code or "").strip().upper()
+        if not normalized:
+            return None
+        async with self.conn.execute(
+            """
+            SELECT id, code, family_id, user_id, expires_at
+            FROM alice_link_codes
+            WHERE code = ?
+              AND used_at IS NULL
+              AND expires_at >= CURRENT_TIMESTAMP
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (normalized,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        await self.conn.execute(
+            "UPDATE alice_link_codes SET used_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (row["id"],),
+        )
+        await self.conn.commit()
+        return row
+
+    async def upsert_alice_user_link(self, alice_user_id: str, family_id: int, user_id: int) -> None:
+        await self.conn.execute(
+            """
+            INSERT INTO alice_user_links (alice_user_id, family_id, user_id, linked_at, last_used_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(alice_user_id) DO UPDATE SET
+                family_id = excluded.family_id,
+                user_id = excluded.user_id,
+                last_used_at = CURRENT_TIMESTAMP
+            """,
+            (alice_user_id, family_id, user_id),
+        )
+        await self.conn.commit()
+
+    async def get_alice_user_link(self, alice_user_id: str) -> aiosqlite.Row | None:
+        async with self.conn.execute(
+            """
+            SELECT alice_user_id, family_id, user_id, linked_at, last_used_at
+            FROM alice_user_links
+            WHERE alice_user_id = ?
+            LIMIT 1
+            """,
+            (alice_user_id,),
+        ) as cursor:
+            return await cursor.fetchone()
+
+    async def touch_alice_user_link(self, alice_user_id: str) -> None:
+        await self.conn.execute(
+            "UPDATE alice_user_links SET last_used_at = CURRENT_TIMESTAMP WHERE alice_user_id = ?",
+            (alice_user_id,),
+        )
+        await self.conn.commit()
 
 
 class FamilyRepository:
@@ -476,6 +556,33 @@ class PlannedTaskRepository:
             (family_id,),
         ) as cursor:
             return await cursor.fetchall()
+
+    async def search_active_tasks_by_phrase(self, family_id: int, phrase: str, limit: int = 5) -> list[aiosqlite.Row]:
+        normalized = (phrase or "").strip()
+        if not normalized:
+            return []
+        safe_limit = max(1, min(int(limit), 20))
+        async with self.conn.execute(
+            """
+            SELECT id, title, effort_stars
+            FROM planned_tasks
+            WHERE family_id = ? AND is_active = 1
+            ORDER BY sort_order, title, id
+            """,
+            (family_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        needle = normalized.casefold()
+        ranked: list[tuple[int, aiosqlite.Row]] = []
+        for row in rows:
+            title = str(row["title"]).strip()
+            hay = title.casefold()
+            if needle not in hay:
+                continue
+            rank = 0 if hay == needle else 1
+            ranked.append((rank, row))
+        ranked.sort(key=lambda item: (item[0], str(item[1]["title"]).casefold(), int(item[1]["id"])))
+        return [item[1] for item in ranked[:safe_limit]]
 
     async def get_task(self, family_id: int, task_id: int) -> aiosqlite.Row | None:
         async with self.conn.execute(
