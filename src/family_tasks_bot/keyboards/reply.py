@@ -34,6 +34,7 @@ def misc_menu() -> ReplyKeyboardMarkup:
             "Статистика",
             "Состав семьи",
             "Плановые задачи",
+            "Комнаты",
             "О боте",
             "Назад",
         ]
@@ -52,6 +53,18 @@ def stats_menu() -> ReplyKeyboardMarkup:
             "Назад",
         ]
     )
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
+        resize_keyboard=True,
+    )
+
+
+def rooms_menu(is_admin: bool) -> ReplyKeyboardMarkup:
+    labels = ["Список"]
+    if is_admin:
+        labels.append("Правка комнат")
+    labels.append("Назад")
+    rows = _rows_of_two(labels)
     return ReplyKeyboardMarkup(
         keyboard=rows,
         resize_keyboard=True,

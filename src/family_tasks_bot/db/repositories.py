@@ -191,6 +191,104 @@ class FamilyRepository:
         ) as cursor:
             return await cursor.fetchall()
 
+    async def list_rooms(self, family_id: int) -> list[aiosqlite.Row]:
+        async with self.conn.execute(
+            """
+            SELECT id, family_id, name, created_at, updated_at
+            FROM rooms
+            WHERE family_id = ?
+            ORDER BY name, id
+            """,
+            (family_id,),
+        ) as cursor:
+            return await cursor.fetchall()
+
+    async def get_room(self, family_id: int, room_id: int) -> aiosqlite.Row | None:
+        async with self.conn.execute(
+            """
+            SELECT id, family_id, name, created_at, updated_at
+            FROM rooms
+            WHERE family_id = ? AND id = ?
+            """,
+            (family_id, room_id),
+        ) as cursor:
+            return await cursor.fetchone()
+
+    async def create_room(self, family_id: int, name: str) -> int | None:
+        normalized = name.strip()
+        if not normalized:
+            return None
+        async with self.conn.execute(
+            "SELECT 1 FROM rooms WHERE family_id = ? AND lower(name) = lower(?) LIMIT 1",
+            (family_id, normalized),
+        ) as cursor:
+            duplicate = await cursor.fetchone()
+        if duplicate is not None:
+            return None
+        cur = await self.conn.execute(
+            """
+            INSERT INTO rooms (family_id, name)
+            VALUES (?, ?)
+            """,
+            (family_id, normalized),
+        )
+        await self.conn.commit()
+        return int(cur.lastrowid)
+
+    async def rename_room(self, family_id: int, room_id: int, new_name: str) -> bool:
+        normalized = new_name.strip()
+        if not normalized:
+            return False
+        async with self.conn.execute(
+            "SELECT 1 FROM rooms WHERE family_id = ? AND id = ? LIMIT 1",
+            (family_id, room_id),
+        ) as cursor:
+            target_exists = await cursor.fetchone()
+        if target_exists is None:
+            return False
+        async with self.conn.execute(
+            "SELECT 1 FROM rooms WHERE family_id = ? AND id != ? AND lower(name) = lower(?) LIMIT 1",
+            (family_id, room_id, normalized),
+        ) as cursor:
+            duplicate = await cursor.fetchone()
+        if duplicate is not None:
+            return False
+        cur = await self.conn.execute(
+            """
+            UPDATE rooms
+            SET name = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE family_id = ? AND id = ?
+            """,
+            (normalized, family_id, room_id),
+        )
+        await self.conn.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def delete_room(self, family_id: int, room_id: int) -> bool:
+        await self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            async with self.conn.execute(
+                "SELECT 1 FROM rooms WHERE family_id = ? AND id = ? LIMIT 1",
+                (family_id, room_id),
+            ) as cursor:
+                room = await cursor.fetchone()
+            if room is None:
+                await self.conn.rollback()
+                return False
+            await self.conn.execute(
+                "UPDATE planned_tasks SET room_id = NULL WHERE family_id = ? AND room_id = ?",
+                (family_id, room_id),
+            )
+            await self.conn.execute(
+                "DELETE FROM rooms WHERE family_id = ? AND id = ?",
+                (family_id, room_id),
+            )
+            await self.conn.commit()
+            return True
+        except Exception:
+            await self.conn.rollback()
+            raise
+
     async def get_member(self, member_id: int, family_id: int) -> aiosqlite.Row | None:
         async with self.conn.execute(
             """
@@ -271,10 +369,11 @@ class PlannedTaskRepository:
     async def list_tasks(self, family_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
-            SELECT id, title, is_active, sort_order
-            FROM planned_tasks
-            WHERE family_id = ?
-            ORDER BY sort_order, title, id
+            SELECT pt.id, pt.title, pt.is_active, pt.sort_order, pt.room_id, r.name AS room_name
+            FROM planned_tasks pt
+            LEFT JOIN rooms r ON r.id = pt.room_id AND r.family_id = pt.family_id
+            WHERE pt.family_id = ?
+            ORDER BY pt.sort_order, pt.title, pt.id
             """,
             (family_id,),
         ) as cursor:
@@ -282,10 +381,40 @@ class PlannedTaskRepository:
 
     async def get_task(self, family_id: int, task_id: int) -> aiosqlite.Row | None:
         async with self.conn.execute(
-            "SELECT id, title, sort_order, is_active FROM planned_tasks WHERE family_id = ? AND id = ?",
+            """
+            SELECT pt.id, pt.title, pt.sort_order, pt.is_active, pt.room_id, r.name AS room_name
+            FROM planned_tasks pt
+            LEFT JOIN rooms r ON r.id = pt.room_id AND r.family_id = pt.family_id
+            WHERE pt.family_id = ? AND pt.id = ?
+            """,
             (family_id, task_id),
         ) as cursor:
             return await cursor.fetchone()
+
+    async def list_tasks_by_room(self, family_id: int, room_id: int) -> list[aiosqlite.Row]:
+        async with self.conn.execute(
+            """
+            SELECT pt.id, pt.title, pt.is_active, pt.sort_order, pt.room_id, r.name AS room_name
+            FROM planned_tasks pt
+            JOIN rooms r ON r.id = pt.room_id AND r.family_id = pt.family_id
+            WHERE pt.family_id = ? AND pt.room_id = ?
+            ORDER BY pt.sort_order, pt.title, pt.id
+            """,
+            (family_id, room_id),
+        ) as cursor:
+            return await cursor.fetchall()
+
+    async def list_tasks_without_room(self, family_id: int) -> list[aiosqlite.Row]:
+        async with self.conn.execute(
+            """
+            SELECT id, title, is_active, sort_order, room_id
+            FROM planned_tasks
+            WHERE family_id = ? AND room_id IS NULL
+            ORDER BY sort_order, title, id
+            """,
+            (family_id,),
+        ) as cursor:
+            return await cursor.fetchall()
 
     async def create_task(self, family_id: int, title: str, created_by: int) -> int:
         cur = await self.conn.execute(
@@ -308,6 +437,26 @@ class PlannedTaskRepository:
             WHERE family_id = ? AND id = ? AND is_active = 1
             """,
             (title, family_id, task_id),
+        )
+        await self.conn.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def set_task_room(self, family_id: int, task_id: int, room_id: int | None) -> bool:
+        if room_id is not None:
+            async with self.conn.execute(
+                "SELECT 1 FROM rooms WHERE id = ? AND family_id = ? LIMIT 1",
+                (room_id, family_id),
+            ) as cursor:
+                room = await cursor.fetchone()
+            if room is None:
+                return False
+        cur = await self.conn.execute(
+            """
+            UPDATE planned_tasks
+            SET room_id = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE family_id = ? AND id = ?
+            """,
+            (room_id, family_id, task_id),
         )
         await self.conn.commit()
         return (cur.rowcount or 0) > 0

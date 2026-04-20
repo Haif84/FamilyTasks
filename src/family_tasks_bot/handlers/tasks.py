@@ -22,6 +22,11 @@ from family_tasks_bot.utils.validators import is_valid_hhmm
 router = Router(name="tasks")
 
 
+def _task_caption(task: dict | object) -> str:
+    suffix = " (неактивна)" if not bool(task["is_active"]) else ""
+    return f"{task['sort_order']}. {task['title']}{suffix}"
+
+
 async def send_planned_tasks_overview(message: Message, ctx: AccessContext) -> None:
     db, _, _ = get_repositories()
     repo = PlannedTaskRepository(db)
@@ -29,20 +34,58 @@ async def send_planned_tasks_overview(message: Message, ctx: AccessContext) -> N
     if not tasks:
         await message.answer("Список плановых задач пуст.")
         return
-    if can_edit_planned_tasks(ctx):
-        buttons = []
-        for task in tasks:
-            suffix = " (неактивна)" if not bool(task["is_active"]) else ""
-            buttons.append({"id": str(task["id"]), "title": f"{task['sort_order']}. {task['title']}{suffix}"})
+
+    rooms_with_tasks: dict[int, dict[str, int | str]] = {}
+    tasks_without_room: list = []
+    for task in tasks:
+        room_id = task["room_id"]
+        if room_id is None:
+            tasks_without_room.append(task)
+            continue
+        key = int(room_id)
+        room_data = rooms_with_tasks.setdefault(
+            key,
+            {
+                "name": str(task["room_name"] or f"Комната #{room_id}"),
+                "count": 0,
+            },
+        )
+        room_data["count"] = int(room_data["count"]) + 1
+
+    if rooms_with_tasks:
+        room_buttons: list[list[InlineKeyboardButton]] = []
+        for room_id, room_data in sorted(
+            rooms_with_tasks.items(),
+            key=lambda item: str(item[1]["name"]).lower(),
+        ):
+            room_buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"{room_data['name']} ({room_data['count']})",
+                        callback_data=f"roomtasks:{room_id}",
+                    )
+                ]
+            )
         await message.answer(
-            "Плановые задачи — выберите задачу для редактирования:",
+            "Комнаты с задачами:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=room_buttons),
+        )
+
+    if not tasks_without_room:
+        await message.answer("Задач без комнаты нет.")
+        return
+
+    if can_edit_planned_tasks(ctx):
+        buttons = [{"id": str(task["id"]), "title": _task_caption(task)} for task in tasks_without_room]
+        await message.answer(
+            "Задачи без комнаты — выберите задачу для редактирования:",
             reply_markup=tasks_keyboard(buttons, "editpt"),
         )
         return
-    lines = ["Список плановых задач:"]
-    for task in tasks:
-        suffix = " (неактивна)" if not bool(task["is_active"]) else ""
-        lines.append(f"- {task['sort_order']}. #{task['id']} {task['title']}{suffix}")
+
+    lines = ["Задачи без комнаты:"]
+    for task in tasks_without_room:
+        lines.append(f"- {_task_caption(task)}")
     await message.answer("\n".join(lines))
 
 
@@ -211,7 +254,14 @@ async def _build_task_editor_payload(
     deps = await repo.list_dependencies(family_id, task_id)
     is_active = bool(task["is_active"])
     state_text = "Активна" if is_active else "Неактивна"
-    lines = [f"Задача #{task_id}: {task['title']}", f"Позиция в списке: {task['sort_order']}", f"Статус: {state_text}", "Зависимости:"]
+    room_text = str(task["room_name"] or "Без комнаты")
+    lines = [
+        f"Задача #{task_id}: {task['title']}",
+        f"Позиция в списке: {task['sort_order']}",
+        f"Статус: {state_text}",
+        f"Комната: {room_text}",
+        "Зависимости:",
+    ]
     if deps:
         for dep in deps:
             req = "обязательная" if dep["is_required"] else "опциональная"
@@ -223,6 +273,7 @@ async def _build_task_editor_payload(
 
     dep_buttons: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text="Изменить имя", callback_data=f"editpttitle:{task_id}")],
+        [InlineKeyboardButton(text="Комната", callback_data=f"editptroom:{task_id}")],
         [
             InlineKeyboardButton(
                 text="Деактивировать" if is_active else "Активировать",
@@ -364,6 +415,57 @@ async def edit_task_title_start(callback: CallbackQuery, state: FSMContext) -> N
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("editptroom:"))
+async def edit_task_room_start(callback: CallbackQuery) -> None:
+    task_id = int(callback.data.split(":")[1])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if not can_edit_planned_tasks(ctx):
+        await callback.answer("Нет прав", show_alert=True)
+        return
+    repo = PlannedTaskRepository(db)
+    task = await repo.get_task(ctx.family_id, task_id)
+    if task is None:
+        await callback.answer("Задача не найдена", show_alert=True)
+        return
+    rooms = await family_repo.list_rooms(ctx.family_id)
+    rows: list[list[InlineKeyboardButton]] = []
+    for room in rooms:
+        marker = "✓ " if task["room_id"] is not None and int(task["room_id"]) == int(room["id"]) else ""
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{marker}{room['name']}",
+                    callback_data=f"setptroom:{task_id}:{room['id']}",
+                )
+            ]
+        )
+    no_room_marker = "✓ " if task["room_id"] is None else ""
+    rows.append([InlineKeyboardButton(text=f"{no_room_marker}Без комнаты", callback_data=f"setptroom:{task_id}:none")])
+    rows.append([InlineKeyboardButton(text="Назад к задаче", callback_data=f"editpt:{task_id}")])
+    await callback.message.answer("Выберите комнату для задачи:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("setptroom:"))
+async def edit_task_room_set(callback: CallbackQuery) -> None:
+    _, task_id_raw, room_token = callback.data.split(":")
+    task_id = int(task_id_raw)
+    room_id = None if room_token == "none" else int(room_token)
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if not can_edit_planned_tasks(ctx):
+        await callback.answer("Нет прав", show_alert=True)
+        return
+    repo = PlannedTaskRepository(db)
+    updated = await repo.set_task_room(ctx.family_id, task_id, room_id)
+    if not updated:
+        await callback.answer("Не удалось обновить комнату задачи", show_alert=True)
+        return
+    await callback.answer("Комната задачи обновлена")
+    await _send_task_editor(callback.message, repo, ctx.family_id, task_id)
+
+
 @router.message(PlannedTaskStates.waiting_edit_title)
 async def planned_task_edit_title_entered(message: Message, state: FSMContext) -> None:
     title = (message.text or "").strip()
@@ -389,6 +491,47 @@ async def planned_task_edit_title_entered(message: Message, state: FSMContext) -
         await message.answer("Задача не найдена или недоступна для редактирования.")
         return
     await message.answer("Название задачи обновлено.")
+
+
+@router.callback_query(F.data.startswith("roomtasks:"))
+async def planned_tasks_room_view(callback: CallbackQuery) -> None:
+    room_id = int(callback.data.split(":")[1])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if await deny_if_no_family(callback.message, ctx):
+        await callback.answer()
+        return
+    if room_id == 0:
+        await send_planned_tasks_overview(callback.message, ctx)
+        await callback.answer()
+        return
+
+    room = await family_repo.get_room(ctx.family_id, room_id)
+    if room is None:
+        await callback.answer("Комната не найдена", show_alert=True)
+        return
+    repo = PlannedTaskRepository(db)
+    tasks = await repo.list_tasks_by_room(ctx.family_id, room_id)
+    if can_edit_planned_tasks(ctx):
+        task_rows = [
+            [InlineKeyboardButton(text=_task_caption(task), callback_data=f"editpt:{task['id']}")]
+            for task in tasks
+        ]
+    else:
+        task_rows = []
+    task_rows.append([InlineKeyboardButton(text="← К общему списку", callback_data="roomtasks:0")])
+    markup = InlineKeyboardMarkup(inline_keyboard=task_rows)
+    if not tasks:
+        text = f"В комнате «{room['name']}» пока нет задач."
+    elif can_edit_planned_tasks(ctx):
+        text = f"Комната «{room['name']}» — выберите задачу для редактирования:"
+    else:
+        lines = [f"Комната «{room['name']}»:"]
+        for task in tasks:
+            lines.append(f"- {_task_caption(task)}")
+        text = "\n".join(lines)
+    await callback.message.answer(text, reply_markup=markup)
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("adddep:"))

@@ -20,7 +20,13 @@ class RuntimeTaskStates(StatesGroup):
     waiting_custom_delay = State()
 
 
+class RoomStates(StatesGroup):
+    waiting_room_name_create = State()
+    waiting_room_name_rename = State()
+
+
 class NavStates(StatesGroup):
     in_family_menu = State()
     in_planned_tasks_menu = State()
     in_stats_menu = State()
+    in_rooms_menu = State()
