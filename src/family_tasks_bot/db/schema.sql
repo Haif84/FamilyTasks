@@ -45,9 +45,20 @@ CREATE TABLE IF NOT EXISTS family_invites (
     FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT
 );
 
+CREATE TABLE IF NOT EXISTS rooms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    family_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (family_id, name),
+    FOREIGN KEY (family_id) REFERENCES families(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS planned_tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     family_id INTEGER NOT NULL,
+    room_id INTEGER,
     title TEXT NOT NULL,
     description TEXT,
     sort_order INTEGER NOT NULL DEFAULT 0,
@@ -56,6 +67,7 @@ CREATE TABLE IF NOT EXISTS planned_tasks (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (family_id) REFERENCES families(id) ON DELETE CASCADE,
+    FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL,
     FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT
 );
 
@@ -156,6 +168,12 @@ CREATE INDEX IF NOT EXISTS idx_planned_tasks_family_active
 
 CREATE INDEX IF NOT EXISTS idx_planned_tasks_family_sort_order
     ON planned_tasks(family_id, sort_order);
+
+CREATE INDEX IF NOT EXISTS idx_rooms_family_name
+    ON rooms(family_id, name);
+
+CREATE INDEX IF NOT EXISTS idx_planned_tasks_family_room_sort
+    ON planned_tasks(family_id, room_id, sort_order);
 
 CREATE INDEX IF NOT EXISTS idx_task_instances_family_status_activated
     ON task_instances(family_id, status, activated_at);
