@@ -968,6 +968,28 @@ class TaskRuntimeRepository:
             activation = datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)
         return await self.create_instance(family_id, child_task_id, user_id, "dependency", activation)
 
+    async def get_last_undoable_completion(self, family_id: int, user_id: int) -> aiosqlite.Row | None:
+        async with self.conn.execute(
+            """
+            SELECT
+                ul.id AS undo_log_id,
+                tc.id AS completion_id,
+                tc.completed_at,
+                pt.title AS task_title
+            FROM undo_log ul
+            JOIN task_completions tc ON tc.id = ul.action_ref_id AND tc.family_id = ul.family_id
+            JOIN planned_tasks pt ON pt.id = tc.planned_task_id AND pt.family_id = tc.family_id
+            WHERE ul.family_id = ?
+              AND ul.user_id = ?
+              AND ul.action_type = 'completion'
+              AND ul.is_reverted = 0
+            ORDER BY ul.id DESC
+            LIMIT 1
+            """,
+            (family_id, user_id),
+        ) as cursor:
+            return await cursor.fetchone()
+
     async def undo_last_completion(self, family_id: int, user_id: int) -> bool:
         async with self.conn.execute(
             """

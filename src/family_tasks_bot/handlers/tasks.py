@@ -27,6 +27,54 @@ def _task_caption(task: dict | object) -> str:
     return f"{task['sort_order']}. {task['title']}{suffix}"
 
 
+def _family_tzinfo(timezone_name: str) -> ZoneInfo | timezone:
+    try:
+        return ZoneInfo(timezone_name)
+    except Exception:
+        return timezone.utc
+
+
+def _to_family_local_timestamp(raw_value: str, timezone_name: str) -> str:
+    raw = (raw_value or "").strip()
+    if not raw:
+        return raw_value
+    parsed: datetime | None = None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return raw_value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    local = parsed.astimezone(_family_tzinfo(timezone_name))
+    return local.strftime("%Y-%m-%d %H:%M")
+
+
+def _undo_last_completion_confirm_keyboard(completion_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Нет", callback_data=f"undolast:no:{completion_id}"),
+                InlineKeyboardButton(text="Да", callback_data=f"undolast:yes:{completion_id}"),
+            ]
+        ]
+    )
+
+
+async def _clear_callback_inline_keyboard(callback: CallbackQuery) -> None:
+    if callback.message is None:
+        return
+    try:
+        await callback.message.edit_text("Задача выбрана.", reply_markup=None)
+    except TelegramBadRequest:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest:
+            pass
+
+
 async def _manual_done_root_keyboard(
     runtime: TaskRuntimeRepository,
     family_repo,
@@ -1230,6 +1278,7 @@ async def add_default_task(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("addexec:"))
 async def add_execution_callback(callback: CallbackQuery, state: FSMContext) -> None:
     task_id = int(callback.data.split(":")[1])
+    await _clear_callback_inline_keyboard(callback)
     await state.set_state(RuntimeTaskStates.waiting_execution_time)
     await state.update_data(exec_task_id=task_id)
     await callback.message.answer("Введите время чч:мм или 'сейчас'.")
@@ -1304,6 +1353,7 @@ async def complete_manual_task(callback: CallbackQuery, state: FSMContext) -> No
     if task is None:
         await callback.answer("Задача не найдена.", show_alert=True)
         return
+    await _clear_callback_inline_keyboard(callback)
     requested = await _maybe_request_manual_comment(
         callback,
         state,
@@ -1352,6 +1402,7 @@ async def complete_manual_task_for_member(callback: CallbackQuery, state: FSMCon
     if task is None:
         await callback.answer("Задача не найдена.", show_alert=True)
         return
+    await _clear_callback_inline_keyboard(callback)
     requested = await _maybe_request_manual_comment(
         callback,
         state,
@@ -1416,15 +1467,72 @@ async def manual_comment_entered(message: Message, state: FSMContext) -> None:
     await message.answer("Выполнение добавлено с комментарием.")
 
 
-@router.message(F.text == "Отменить последнее выполнение")
+@router.message(F.text == "Отм. последнее выполнение")
 async def undo_last_completion(message: Message) -> None:
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if await deny_if_no_family(message, ctx):
         return
     runtime = TaskRuntimeRepository(db)
+    completion = await runtime.get_last_undoable_completion(ctx.family_id, ctx.user_id)
+    if completion is None:
+        await message.answer("Нет действий для отмены.")
+        return
+    local_completed_at = _to_family_local_timestamp(
+        str(completion["completed_at"]),
+        ctx.family_timezone or "UTC",
+    )
+    task_title = str(completion["task_title"])
+    await message.answer(
+        f"Вы действительно хотите отменить выполнение {local_completed_at} {task_title}?",
+        reply_markup=_undo_last_completion_confirm_keyboard(int(completion["completion_id"])),
+    )
+
+
+@router.callback_query(F.data.startswith("undolast:no:"))
+async def undo_last_completion_no(callback: CallbackQuery) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    completion_id = int(callback.data.split(":")[2])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if await deny_if_no_family(callback.message, ctx):
+        return
+    runtime = TaskRuntimeRepository(db)
+    completion = await runtime.get_last_undoable_completion(ctx.family_id, ctx.user_id)
+    if completion is None or int(completion["completion_id"]) != completion_id:
+        await callback.answer("Нет действий для отмены.")
+        return
+    try:
+        await callback.message.edit_text("Операция отменена.")
+    except TelegramBadRequest:
+        await callback.message.answer("Операция отменена.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("undolast:yes:"))
+async def undo_last_completion_yes(callback: CallbackQuery) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    completion_id = int(callback.data.split(":")[2])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if await deny_if_no_family(callback.message, ctx):
+        return
+    runtime = TaskRuntimeRepository(db)
+    completion = await runtime.get_last_undoable_completion(ctx.family_id, ctx.user_id)
+    if completion is None or int(completion["completion_id"]) != completion_id:
+        await callback.answer("Последнее выполнение уже изменилось. Повторите команду.", show_alert=True)
+        return
     ok = await runtime.undo_last_completion(ctx.family_id, ctx.user_id)
-    await message.answer("Последнее выполнение отменено." if ok else "Нет действий для отмены.")
+    text = "Последнее выполнение отменено." if ok else "Нет действий для отмены."
+    try:
+        await callback.message.edit_text(text)
+    except TelegramBadRequest:
+        await callback.message.answer(text)
+    await callback.answer()
 
 
 async def _process_dependencies(

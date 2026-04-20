@@ -13,7 +13,7 @@ def main_menu(is_admin: bool) -> ReplyKeyboardMarkup:
     labels: list[str] = []
     if is_admin:
         labels.append("Текущие задачи")
-    labels.extend(["Добавить выполненную", "Отменить последнее выполнение"])
+    labels.extend(["Добавить выполненную", "Отм. последнее выполнение"])
     if is_admin:
         labels.append("Добавить к выполнению")
     labels.extend(["Статистика", "Прочее"])
