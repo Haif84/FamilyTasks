@@ -1050,16 +1050,17 @@ async def stats_back_task(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-def _history_card_text(entry: dict, timezone_name: str) -> str:
-    local_completed_at = _to_family_local_timestamp(str(entry["completed_at"]), timezone_name)
-    local_added_at = _to_family_local_timestamp(str(entry["added_at"]), timezone_name)
-    local_updated_at = _to_family_local_timestamp(str(entry["history_updated_at"]), timezone_name)
-    action = _format_action_label(str(entry["task_title"]), str(entry["completion_mode"]))
-    comment = str(entry.get("comment_text") or "").strip()
+def _history_card_text(entry: dict | object, timezone_name: str) -> str:
+    row = dict(entry) if not isinstance(entry, dict) else entry
+    local_completed_at = _to_family_local_timestamp(str(row["completed_at"]), timezone_name)
+    local_added_at = _to_family_local_timestamp(str(row["added_at"]), timezone_name)
+    local_updated_at = _to_family_local_timestamp(str(row["history_updated_at"]), timezone_name)
+    action = _format_action_label(str(row["task_title"]), str(row["completion_mode"]))
+    comment = str(row.get("comment_text") or "").strip()
     lines = [
-        f"Запись истории #{entry['completion_id']}",
+        f"Запись истории #{row['completion_id']}",
         f"Действие: {action}",
-        f"Исполнитель: {entry['member_display_name']}",
+        f"Исполнитель: {row['member_display_name']}",
         f"Дата/Время действия: {local_completed_at}",
         f"Дата/Время добавления действия: {local_added_at}",
         f"Дата/Время изменения истории: {local_updated_at}",
