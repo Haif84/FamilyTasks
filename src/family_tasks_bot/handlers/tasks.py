@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from calendar import monthrange
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
@@ -148,6 +149,106 @@ def _add_execution_confirm_keyboard() -> InlineKeyboardMarkup:
             ],
             [InlineKeyboardButton(text="Добавить", callback_data="addexecconfirm:add")],
             [InlineKeyboardButton(text="Добавить (еще одну)", callback_data="addexecconfirm:addmore")],
+        ]
+    )
+
+
+def _manual_fin_tz(tz_name: str) -> ZoneInfo | timezone:
+    try:
+        return ZoneInfo(tz_name or "UTC")
+    except Exception:
+        return timezone.utc
+
+
+def _parse_completed_at_utc_sql(value: str) -> datetime:
+    raw = (value or "").strip()
+    if not raw:
+        raise ValueError("empty")
+    if "T" not in raw and " " in raw:
+        raw = raw.replace(" ", "T", 1)
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    dt = datetime.fromisoformat(raw)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _bump_manual_completion_local_datetime(
+    completed_at_utc_sql: str,
+    tz_name: str,
+    field: str,
+    delta: int,
+) -> str:
+    utc = _parse_completed_at_utc_sql(completed_at_utc_sql)
+    tz = _manual_fin_tz(tz_name)
+    local = utc.astimezone(tz)
+    y, M, d, h, mi, sec = (
+        local.year,
+        local.month,
+        local.day,
+        local.hour,
+        local.minute,
+        local.second,
+    )
+    if field == "m":
+        local2 = local + timedelta(minutes=delta)
+    elif field == "h":
+        local2 = local + timedelta(hours=delta)
+    elif field == "d":
+        local2 = local + timedelta(days=delta)
+    elif field == "M":
+        total = y * 12 + (M - 1) + delta
+        y2, m0 = divmod(total, 12)
+        M2 = m0 + 1
+        max_d = monthrange(y2, M2)[1]
+        d2 = min(d, max_d)
+        local2 = local.replace(year=y2, month=M2, day=d2)
+    elif field == "y":
+        y2 = y + delta
+        max_d = monthrange(y2, M)[1]
+        d2 = min(d, max_d)
+        local2 = local.replace(year=y2, day=d2)
+    else:
+        local2 = local
+    return local2.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _manual_completion_final_keyboard(
+    *,
+    is_admin: bool,
+    requires_comment: bool,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if is_admin:
+        rows.append([InlineKeyboardButton(text="Исполнитель", callback_data="mcfin:exec")])
+        rows.append([InlineKeyboardButton(text="Дата/Время", callback_data="mcfin:dt")])
+    if requires_comment:
+        rows.append([InlineKeyboardButton(text="Комментарий", callback_data="mcfin:comment")])
+    rows.append(
+        [
+            InlineKeyboardButton(text="Отмена", callback_data="mcfin:cancel"),
+            InlineKeyboardButton(text="Назад", callback_data="mcfin:back"),
+        ]
+    )
+    rows.append([InlineKeyboardButton(text="Добавить", callback_data="mcfin:add")])
+    rows.append([InlineKeyboardButton(text="Добавить (еще одну)", callback_data="mcfin:addmore")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _manual_completion_datetime_keyboard(time_preview: str) -> InlineKeyboardMarkup:
+    fields = ["d", "M", "y", "h", "m"]
+    labels_up = ["День+", "Мес+", "Год+", "Час+", "Мин+"]
+    labels_dn = ["День−", "Мес−", "Год−", "Час−", "Мин−"]
+    row_up = [InlineKeyboardButton(text=labels_up[i], callback_data=f"mcdt:+:{fields[i]}") for i in range(5)]
+    row_dn = [InlineKeyboardButton(text=labels_dn[i], callback_data=f"mcdt:-:{fields[i]}") for i in range(5)]
+    preview = time_preview if len(time_preview) <= 64 else f"{time_preview[:61]}..."
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=preview, callback_data="noop")],
+            row_up,
+            row_dn,
+            [InlineKeyboardButton(text="Назад", callback_data="mcdt:back")],
         ]
     )
 
@@ -346,6 +447,99 @@ def _add_execution_group_keyboard(tasks: list[dict | object], group_id: int) -> 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _manual_fin_local_display(utc_sql: str, tz_name: str) -> str:
+    raw = (utc_sql or "").strip()
+    if not raw:
+        return "—"
+    try:
+        dt = _parse_completed_at_utc_sql(raw)
+    except ValueError:
+        return raw
+    tz = _manual_fin_tz(tz_name)
+    return dt.astimezone(tz).strftime("%Y-%m-%d %H:%M")
+
+
+async def _manual_fin_seed_state(
+    state: FSMContext,
+    *,
+    planned_task_id: int,
+    completed_by_user_id: int,
+    actor_user_id: int,
+    scope: str,
+    scope_id: int,
+    add_more: bool,
+    for_member: bool,
+    target_member_name: str,
+    task_requires_comment: bool,
+    initial_comment: str,
+    chat_id: int,
+) -> None:
+    utc_now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    await state.update_data(
+        m_fin_planned_task_id=planned_task_id,
+        m_fin_completed_by=completed_by_user_id,
+        m_fin_actor_user_id=actor_user_id,
+        m_fin_scope=scope,
+        m_fin_scope_id=scope_id,
+        m_fin_add_more=add_more,
+        m_fin_for_member=1 if for_member else 0,
+        m_fin_target_name=target_member_name,
+        m_fin_task_requires_comment=1 if task_requires_comment else 0,
+        m_fin_comment=initial_comment.strip(),
+        m_fin_completed_at_utc=utc_now,
+        m_fin_chat_id=chat_id,
+        m_fin_final_msg_id=None,
+        m_fin_dt_ui_msg_id=None,
+        m_fin_dt_baseline_utc=None,
+        m_fin_exec_pick_msg_id=None,
+    )
+    await state.set_state(RuntimeTaskStates.waiting_manual_completion_draft)
+
+
+async def _manual_fin_answer_final(
+    message: Message,
+    state: FSMContext,
+    ctx: AccessContext,
+    family_repo,
+    task: dict | object,
+) -> None:
+    data = await state.get_data()
+    tz = ctx.family_timezone or "UTC"
+    when = _manual_fin_local_display(str(data.get("m_fin_completed_at_utc") or ""), tz)
+    memb_id = int(data.get("m_fin_completed_by", 0))
+    members = await family_repo.list_members_for_edit(ctx.family_id)
+    mname = _member_display_name(members, memb_id) or str(memb_id)
+    comment = (data.get("m_fin_comment") or "").strip()
+    req_c = int(data.get("m_fin_task_requires_comment") or 0) == 1
+    lines = [
+        f"Финальное подтверждение: {task['title']}",
+        f"Исполнитель: {mname}",
+        f"Время выполнения: {when}",
+    ]
+    if req_c:
+        lines.append(f"Комментарий: {comment or '(пусто)'}")
+    text = "\n".join(lines)
+    kb = _manual_completion_final_keyboard(
+        is_admin=ctx.is_admin,
+        requires_comment=req_c,
+    )
+    chat_id = int(data.get("m_fin_chat_id") or message.chat.id)
+    mid = data.get("m_fin_final_msg_id")
+    if mid is not None:
+        try:
+            await message.bot.edit_message_text(
+                text=text,
+                chat_id=chat_id,
+                message_id=int(mid),
+                reply_markup=kb,
+            )
+            return
+        except TelegramBadRequest:
+            pass
+    sent = await message.answer(text, reply_markup=kb)
+    await state.update_data(m_fin_final_msg_id=sent.message_id)
+
+
 async def _finalize_manual_completion(
     bot,
     runtime: TaskRuntimeRepository,
@@ -357,6 +551,7 @@ async def _finalize_manual_completion(
     actor_user_id: int,
     actor_chat_id: int | None,
     comment_text: str | None = None,
+    completed_at_utc: str | None = None,
 ) -> None:
     await runtime.add_manual_completion(
         family_id,
@@ -364,6 +559,7 @@ async def _finalize_manual_completion(
         completed_by_user_id,
         comment_text=comment_text,
         actor_user_id=actor_user_id,
+        completed_at_utc=completed_at_utc,
     )
     await _process_dependencies(
         bot,
@@ -376,26 +572,85 @@ async def _finalize_manual_completion(
     )
 
 
-async def _maybe_request_manual_comment(
-    callback: CallbackQuery,
+async def _manual_fin_try_delete_message(bot, chat_id: int, message_id: int | None) -> None:
+    if message_id is None:
+        return
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=int(message_id))
+    except TelegramBadRequest:
+        pass
+
+
+async def _manual_fin_cleanup_submessages(bot, data: dict, chat_id: int) -> None:
+    await _manual_fin_try_delete_message(bot, chat_id, data.get("m_fin_dt_ui_msg_id"))
+    await _manual_fin_try_delete_message(bot, chat_id, data.get("m_fin_exec_pick_msg_id"))
+
+
+async def _manual_fin_success_finish(
+    message: Message,
     state: FSMContext,
     *,
-    task: dict | object,
-    completed_by_user_id: int,
-    actor_user_id: int,
-) -> bool:
-    if not bool(task["requires_comment"]):
-        return False
-    await state.set_state(RuntimeTaskStates.waiting_manual_comment)
-    await state.update_data(
-        manual_comment_task_id=int(task["id"]),
-        manual_comment_completed_by_user_id=completed_by_user_id,
-        manual_comment_actor_user_id=actor_user_id,
-    )
-    await callback.message.answer(
-        f"Задача «{task['title']}» требует комментарий.\nВведите комментарий (или отправьте «Отмена»):"
-    )
-    return True
+    runtime: TaskRuntimeRepository,
+    family_repo,
+    ctx: AccessContext,
+    task_title: str,
+) -> None:
+    data = await state.get_data()
+    add_more = bool(data.get("m_fin_add_more", False))
+    scope = str(data.get("m_fin_scope", "root"))
+    scope_id = int(data.get("m_fin_scope_id", 0))
+    for_member = int(data.get("m_fin_for_member", 0)) == 1
+    target_user_id = int(data.get("m_fin_completed_by", 0))
+    member_name = str(data.get("m_fin_target_name", "")).strip()
+    chat_id = int(data.get("m_fin_chat_id") or message.chat.id)
+    await _manual_fin_cleanup_submessages(message.bot, data, chat_id)
+    success_text = f"Задача {task_title} добавлена"
+    mid = data.get("m_fin_final_msg_id")
+    if mid is not None:
+        try:
+            await message.bot.edit_message_text(
+                success_text,
+                chat_id=chat_id,
+                message_id=int(mid),
+                reply_markup=None,
+            )
+        except TelegramBadRequest:
+            await message.answer(success_text)
+    else:
+        await message.answer(success_text)
+    await state.clear()
+    family_id = ctx.family_id
+    if not add_more:
+        return
+    if for_member:
+        display_name = member_name
+        if not display_name and target_user_id > 0:
+            members = await family_repo.list_members_for_edit(family_id)
+            display_name = _member_display_name(members, target_user_id) or "Участник"
+        if target_user_id > 0:
+            payload = await _manual_member_level_payload(
+                runtime,
+                family_repo,
+                family_id=family_id,
+                target_user_id=target_user_id,
+                member_name=display_name or "Участник",
+                scope=scope,
+                scope_id=scope_id,
+            )
+            if payload is not None:
+                level_text, level_kb = payload
+                await message.answer(level_text, reply_markup=level_kb)
+    else:
+        payload = await _manual_self_level_payload(
+            runtime,
+            family_repo,
+            family_id=family_id,
+            scope=scope,
+            scope_id=scope_id,
+        )
+        if payload is not None:
+            level_text, level_kb = payload
+            await message.answer(level_text, reply_markup=level_kb)
 
 
 async def send_planned_tasks_overview(message: Message, ctx: AccessContext) -> None:
@@ -1866,7 +2121,6 @@ async def complete_manual_task_confirm(callback: CallbackQuery, state: FSMContex
         return
     repo = PlannedTaskRepository(db)
     runtime = TaskRuntimeRepository(db)
-    notify_repo = NotificationRepository(db)
     task = await repo.get_task(ctx.family_id, planned_task_id)
     if task is None:
         await callback.answer("Задача не найдена.", show_alert=True)
@@ -1891,15 +2145,12 @@ async def complete_manual_task_confirm(callback: CallbackQuery, state: FSMContex
         await callback.answer()
         return
     add_more = action == "addmore"
-    requested = await _maybe_request_manual_comment(
-        callback,
-        state,
-        task=task,
-        completed_by_user_id=ctx.user_id,
-        actor_user_id=ctx.user_id,
-    )
-    if requested:
+    if bool(task["requires_comment"]):
         await state.update_data(
+            manual_comment_leads_to_final_menu=True,
+            manual_comment_task_id=planned_task_id,
+            manual_comment_completed_by_user_id=ctx.user_id,
+            manual_comment_actor_user_id=ctx.user_id,
             manual_comment_task_title=str(task["title"]),
             manual_comment_add_more=add_more,
             manual_comment_scope=scope,
@@ -1907,33 +2158,28 @@ async def complete_manual_task_confirm(callback: CallbackQuery, state: FSMContex
             manual_comment_target_user_id=0,
             manual_comment_target_member_name="",
         )
+        await state.set_state(RuntimeTaskStates.waiting_manual_comment)
+        await callback.message.answer(
+            f"Задача «{task['title']}» требует комментарий.\nВведите комментарий (или отправьте «Отмена»):"
+        )
         await callback.answer()
         return
-    await _finalize_manual_completion(
-        callback.message.bot,
-        runtime,
-        notify_repo,
-        family_id=ctx.family_id,
+    await _manual_fin_seed_state(
+        state,
         planned_task_id=planned_task_id,
         completed_by_user_id=ctx.user_id,
         actor_user_id=ctx.user_id,
-        actor_chat_id=callback.from_user.id,
+        scope=scope,
+        scope_id=scope_id,
+        add_more=add_more,
+        for_member=False,
+        target_member_name="",
+        task_requires_comment=False,
+        initial_comment="",
+        chat_id=callback.message.chat.id,
     )
-    success_text = f"Задача {task['title']} добавлена"
-    if add_more:
-        await callback.message.edit_text(success_text)
-        payload = await _manual_self_level_payload(
-            runtime,
-            family_repo,
-            family_id=ctx.family_id,
-            scope=scope,
-            scope_id=scope_id,
-        )
-        if payload is not None:
-            level_text, level_kb = payload
-            await callback.message.answer(level_text, reply_markup=level_kb)
-    else:
-        await callback.message.edit_text(success_text)
+    await state.update_data(m_fin_final_msg_id=callback.message.message_id)
+    await _manual_fin_answer_final(callback.message, state, ctx, family_repo, task)
     await callback.answer()
 
 
@@ -2011,7 +2257,6 @@ async def complete_manual_task_for_member_confirm(callback: CallbackQuery, state
         return
     repo = PlannedTaskRepository(db)
     runtime = TaskRuntimeRepository(db)
-    notify_repo = NotificationRepository(db)
     task = await repo.get_task(ctx.family_id, planned_task_id)
     if task is None:
         await callback.answer("Задача не найдена.", show_alert=True)
@@ -2038,15 +2283,12 @@ async def complete_manual_task_for_member_confirm(callback: CallbackQuery, state
         await callback.answer()
         return
     add_more = action == "addmore"
-    requested = await _maybe_request_manual_comment(
-        callback,
-        state,
-        task=task,
-        completed_by_user_id=target_user_id,
-        actor_user_id=ctx.user_id,
-    )
-    if requested:
+    if bool(task["requires_comment"]):
         await state.update_data(
+            manual_comment_leads_to_final_menu=True,
+            manual_comment_task_id=planned_task_id,
+            manual_comment_completed_by_user_id=target_user_id,
+            manual_comment_actor_user_id=ctx.user_id,
             manual_comment_task_title=str(task["title"]),
             manual_comment_add_more=add_more,
             manual_comment_scope=scope,
@@ -2054,36 +2296,307 @@ async def complete_manual_task_for_member_confirm(callback: CallbackQuery, state
             manual_comment_target_user_id=target_user_id,
             manual_comment_target_member_name=member_name,
         )
-        await callback.message.answer(f"Исполнитель: {member_name}")
+        await state.set_state(RuntimeTaskStates.waiting_manual_comment)
+        await callback.message.answer(
+            f"Исполнитель: {member_name}\n"
+            f"Задача «{task['title']}» требует комментарий.\n"
+            f"Введите комментарий (или отправьте «Отмена»):"
+        )
         await callback.answer()
         return
-    await _finalize_manual_completion(
-        callback.message.bot,
-        runtime,
-        notify_repo,
-        family_id=ctx.family_id,
+    await _manual_fin_seed_state(
+        state,
         planned_task_id=planned_task_id,
         completed_by_user_id=target_user_id,
         actor_user_id=ctx.user_id,
-        actor_chat_id=callback.from_user.id,
+        scope=scope,
+        scope_id=scope_id,
+        add_more=add_more,
+        for_member=True,
+        target_member_name=member_name,
+        task_requires_comment=False,
+        initial_comment="",
+        chat_id=callback.message.chat.id,
     )
-    success_text = f"Задача {task['title']} добавлена"
-    if add_more:
-        await callback.message.edit_text(success_text)
-        payload = await _manual_member_level_payload(
-            runtime,
-            family_repo,
-            family_id=ctx.family_id,
-            target_user_id=target_user_id,
-            member_name=member_name,
-            scope=scope,
-            scope_id=scope_id,
+    await state.update_data(m_fin_final_msg_id=callback.message.message_id)
+    await _manual_fin_answer_final(callback.message, state, ctx, family_repo, task)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "noop")
+async def manual_inline_noop(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("mcfin:"))
+async def manual_completion_final_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    cur = await state.get_state()
+    if cur is None or cur != RuntimeTaskStates.waiting_manual_completion_draft.state:
+        await callback.answer()
+        return
+    action = callback.data.split(":", 1)[1]
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if await deny_if_no_family(callback.message, ctx):
+        await state.clear()
+        await callback.answer()
+        return
+    data = await state.get_data()
+    chat_id = int(data.get("m_fin_chat_id") or callback.message.chat.id)
+    runtime = TaskRuntimeRepository(db)
+    notify_repo = NotificationRepository(db)
+    repo = PlannedTaskRepository(db)
+    planned_task_id = int(data.get("m_fin_planned_task_id", 0))
+    task = await repo.get_task(ctx.family_id, planned_task_id) if planned_task_id > 0 else None
+    if task is None:
+        await state.clear()
+        await callback.answer("Задача не найдена.", show_alert=True)
+        return
+
+    if action == "cancel":
+        await _manual_fin_cleanup_submessages(callback.message.bot, data, chat_id)
+        await state.clear()
+        try:
+            await callback.message.edit_text("Операция отменена.", reply_markup=None)
+        except TelegramBadRequest:
+            await callback.message.answer("Операция отменена.")
+        await callback.answer()
+        return
+
+    if action == "back":
+        await _manual_fin_cleanup_submessages(callback.message.bot, data, chat_id)
+        scope = str(data.get("m_fin_scope", "root"))
+        scope_id = int(data.get("m_fin_scope_id", 0))
+        for_member = int(data.get("m_fin_for_member", 0)) == 1
+        target_uid = int(data.get("m_fin_completed_by", 0))
+        member_name = str(data.get("m_fin_target_name", "")).strip()
+        await state.clear()
+        if for_member:
+            members = await family_repo.list_members_for_edit(ctx.family_id)
+            if member_name == "" and target_uid > 0:
+                member_name = _member_display_name(members, target_uid) or "Участник"
+            await _show_manual_member_level(
+                callback,
+                runtime,
+                family_repo,
+                family_id=ctx.family_id,
+                target_user_id=target_uid,
+                member_name=member_name or "Участник",
+                scope=scope,
+                scope_id=scope_id,
+            )
+        else:
+            await _show_manual_self_level(
+                callback,
+                runtime,
+                family_repo,
+                family_id=ctx.family_id,
+                scope=scope,
+                scope_id=scope_id,
+            )
+        await callback.answer()
+        return
+
+    if action == "exec":
+        if not ctx.is_admin:
+            await callback.answer("Нет прав.", show_alert=True)
+            return
+        members = await family_repo.list_members_for_edit(ctx.family_id)
+        rows = [
+            [InlineKeyboardButton(text=str(m["display_name"]), callback_data=f"mcexsel:{m['user_id']}")]
+            for m in members
+        ]
+        rows.append([InlineKeyboardButton(text="Назад", callback_data="mcexsel:back")])
+        prev_pick = data.get("m_fin_exec_pick_msg_id")
+        await _manual_fin_try_delete_message(callback.message.bot, chat_id, prev_pick)
+        sent = await callback.message.answer(
+            "Выберите исполнителя:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         )
-        if payload is not None:
-            level_text, level_kb = payload
-            await callback.message.answer(level_text, reply_markup=level_kb)
-    else:
-        await callback.message.edit_text(success_text)
+        await state.update_data(m_fin_exec_pick_msg_id=sent.message_id)
+        await callback.answer()
+        return
+
+    if action == "dt":
+        if not ctx.is_admin:
+            await callback.answer("Нет прав.", show_alert=True)
+            return
+        tz = ctx.family_timezone or "UTC"
+        baseline = str(data.get("m_fin_completed_at_utc") or "")
+        await state.update_data(m_fin_dt_baseline_utc=baseline)
+        prev_dt = data.get("m_fin_dt_ui_msg_id")
+        await _manual_fin_try_delete_message(callback.message.bot, chat_id, prev_dt)
+        preview = _manual_fin_local_display(baseline, tz)
+        header = (
+            f"Текущая дата/время (база): {_manual_fin_local_display(baseline, tz)}\n"
+            f"Измените время кнопками ниже (новое значение на первой кнопке)."
+        )
+        sent = await callback.message.answer(
+            header,
+            reply_markup=_manual_completion_datetime_keyboard(preview),
+        )
+        await state.update_data(m_fin_dt_ui_msg_id=sent.message_id)
+        await callback.answer()
+        return
+
+    if action == "comment":
+        if int(data.get("m_fin_task_requires_comment", 0)) != 1:
+            await callback.answer()
+            return
+        await state.update_data(manual_comment_redraft=True)
+        await state.set_state(RuntimeTaskStates.waiting_manual_comment)
+        await callback.message.answer("Введите новый комментарий (или «Отмена»):")
+        await callback.answer()
+        return
+
+    if action in {"add", "addmore"}:
+        req_c = int(data.get("m_fin_task_requires_comment", 0)) == 1
+        comment = (data.get("m_fin_comment") or "").strip()
+        if req_c and not comment:
+            await callback.answer("Сначала введите комментарий.", show_alert=True)
+            return
+        completed_by = int(data.get("m_fin_completed_by", 0))
+        actor_user_id = int(data.get("m_fin_actor_user_id", 0))
+        completed_at_utc = str(data.get("m_fin_completed_at_utc") or "").strip() or None
+        add_more = action == "addmore"
+        await state.update_data(m_fin_add_more=add_more)
+        await _finalize_manual_completion(
+            callback.message.bot,
+            runtime,
+            notify_repo,
+            family_id=ctx.family_id,
+            planned_task_id=planned_task_id,
+            completed_by_user_id=completed_by,
+            actor_user_id=actor_user_id,
+            actor_chat_id=callback.from_user.id,
+            comment_text=comment if req_c else None,
+            completed_at_utc=completed_at_utc,
+        )
+        await _manual_fin_success_finish(
+            callback.message,
+            state,
+            runtime=runtime,
+            family_repo=family_repo,
+            ctx=ctx,
+            task_title=str(task["title"]),
+        )
+        await callback.answer()
+        return
+
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("mcdt:"))
+async def manual_completion_datetime_adjust(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    cur = await state.get_state()
+    if cur is None or cur != RuntimeTaskStates.waiting_manual_completion_draft.state:
+        await callback.answer()
+        return
+    parts = callback.data.split(":")
+    if len(parts) == 2 and parts[1] == "back":
+        db, user_repo, family_repo = get_repositories()
+        ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+        if await deny_if_no_family(callback.message, ctx):
+            await state.clear()
+            await callback.answer()
+            return
+        data = await state.get_data()
+        chat_id = int(data.get("m_fin_chat_id") or callback.message.chat.id)
+        await _manual_fin_try_delete_message(callback.message.bot, chat_id, data.get("m_fin_dt_ui_msg_id"))
+        await state.update_data(m_fin_dt_ui_msg_id=None, m_fin_dt_baseline_utc=None)
+        repo = PlannedTaskRepository(db)
+        tid = int(data.get("m_fin_planned_task_id", 0))
+        task = await repo.get_task(ctx.family_id, tid) if tid > 0 else None
+        if task is not None:
+            await _manual_fin_answer_final(callback.message, state, ctx, family_repo, task)
+        await callback.answer()
+        return
+    if len(parts) != 3:
+        await callback.answer()
+        return
+    _, sign, field = parts
+    delta = 1 if sign == "+" else -1 if sign == "-" else 0
+    if delta == 0 or field not in {"d", "M", "y", "h", "m"}:
+        await callback.answer()
+        return
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if await deny_if_no_family(callback.message, ctx):
+        await state.clear()
+        await callback.answer()
+        return
+    data = await state.get_data()
+    cur_utc = str(data.get("m_fin_completed_at_utc") or "").strip()
+    if not cur_utc:
+        await callback.answer()
+        return
+    tz_name = ctx.family_timezone or "UTC"
+    try:
+        new_utc = _bump_manual_completion_local_datetime(cur_utc, tz_name, field, delta)
+    except ValueError:
+        await callback.answer("Некорректное время.", show_alert=True)
+        return
+    await state.update_data(m_fin_completed_at_utc=new_utc)
+    preview = _manual_fin_local_display(new_utc, tz_name)
+    baseline = str(data.get("m_fin_dt_baseline_utc") or cur_utc)
+    header = (
+        f"Текущая дата/время (база): {_manual_fin_local_display(baseline, tz_name)}\n"
+        f"Измените время кнопками ниже (новое значение на первой кнопке)."
+    )
+    try:
+        await callback.message.edit_text(
+            header,
+            reply_markup=_manual_completion_datetime_keyboard(preview),
+        )
+    except TelegramBadRequest:
+        pass
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("mcexsel:"))
+async def manual_completion_executor_chosen(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    cur = await state.get_state()
+    if cur is None or cur != RuntimeTaskStates.waiting_manual_completion_draft.state:
+        await callback.answer()
+        return
+    token = callback.data.split(":", 1)[1]
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if await deny_if_no_family(callback.message, ctx):
+        await state.clear()
+        await callback.answer()
+        return
+    data = await state.get_data()
+    chat_id = int(data.get("m_fin_chat_id") or callback.message.chat.id)
+    await _manual_fin_try_delete_message(callback.message.bot, chat_id, data.get("m_fin_exec_pick_msg_id"))
+    await state.update_data(m_fin_exec_pick_msg_id=None)
+    if token == "back":
+        repo = PlannedTaskRepository(db)
+        tid = int(data.get("m_fin_planned_task_id", 0))
+        task = await repo.get_task(ctx.family_id, tid) if tid > 0 else None
+        if task is not None:
+            await _manual_fin_answer_final(callback.message, state, ctx, family_repo, task)
+        await callback.answer()
+        return
+    if not token.isdigit():
+        await callback.answer()
+        return
+    new_uid = int(token)
+    await state.update_data(m_fin_completed_by=new_uid)
+    repo = PlannedTaskRepository(db)
+    tid = int(data.get("m_fin_planned_task_id", 0))
+    task = await repo.get_task(ctx.family_id, tid) if tid > 0 else None
+    if task is not None:
+        await _manual_fin_answer_final(callback.message, state, ctx, family_repo, task)
     await callback.answer()
 
 
@@ -2098,10 +2611,32 @@ async def manual_comment_entered(message: Message, state: FSMContext) -> None:
         await message.answer("Комментарий не может быть пустым. Введите текст или «Отмена».")
         return
     data = await state.get_data()
+    if data.get("manual_comment_redraft"):
+        db, user_repo, family_repo = get_repositories()
+        ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+        if await deny_if_no_family(message, ctx):
+            await state.clear()
+            return
+        await state.update_data(manual_comment_redraft=False, m_fin_comment=text)
+        await state.set_state(RuntimeTaskStates.waiting_manual_completion_draft)
+        repo = PlannedTaskRepository(db)
+        tid = int(data.get("m_fin_planned_task_id", 0))
+        task = await repo.get_task(ctx.family_id, tid) if tid > 0 else None
+        if task is None:
+            await state.clear()
+            await message.answer("Не удалось определить задачу.")
+            return
+        await _manual_fin_answer_final(message, state, ctx, family_repo, task)
+        return
+
+    if not data.get("manual_comment_leads_to_final_menu"):
+        await state.clear()
+        await message.answer("Сессия устарела. Начните добавление заново.")
+        return
+
     planned_task_id = int(data.get("manual_comment_task_id", 0))
     completed_by_user_id = int(data.get("manual_comment_completed_by_user_id", 0))
     actor_user_id = int(data.get("manual_comment_actor_user_id", 0))
-    task_title = str(data.get("manual_comment_task_title", "")).strip()
     add_more = bool(data.get("manual_comment_add_more", False))
     scope = str(data.get("manual_comment_scope", "root"))
     scope_id = int(data.get("manual_comment_scope_id", 0))
@@ -2116,54 +2651,29 @@ async def manual_comment_entered(message: Message, state: FSMContext) -> None:
     if await deny_if_no_family(message, ctx):
         await state.clear()
         return
-    runtime = TaskRuntimeRepository(db)
-    notify_repo = NotificationRepository(db)
-    await _finalize_manual_completion(
-        message.bot,
-        runtime,
-        notify_repo,
-        family_id=ctx.family_id,
+    repo = PlannedTaskRepository(db)
+    task = await repo.get_task(ctx.family_id, planned_task_id)
+    if task is None:
+        await state.clear()
+        await message.answer("Задача не найдена.")
+        return
+    await state.update_data(manual_comment_leads_to_final_menu=False)
+    for_member = target_user_id > 0
+    await _manual_fin_seed_state(
+        state,
         planned_task_id=planned_task_id,
         completed_by_user_id=completed_by_user_id,
         actor_user_id=actor_user_id,
-        actor_chat_id=message.from_user.id,
-        comment_text=text,
+        scope=scope,
+        scope_id=scope_id,
+        add_more=add_more,
+        for_member=for_member,
+        target_member_name=target_member_name,
+        task_requires_comment=True,
+        initial_comment=text,
+        chat_id=message.chat.id,
     )
-    success_title = task_title or "задача"
-    if add_more:
-        family_id = ctx.family_id
-        await message.answer(f"Задача {success_title} добавлена")
-        if target_user_id > 0:
-            display_name = target_member_name
-            if not display_name:
-                members = await family_repo.list_members_for_edit(family_id)
-                display_name = _member_display_name(members, target_user_id) or "Участник"
-            payload = await _manual_member_level_payload(
-                runtime,
-                family_repo,
-                family_id=family_id,
-                target_user_id=target_user_id,
-                member_name=display_name,
-                scope=scope,
-                scope_id=scope_id,
-            )
-            if payload is not None:
-                level_text, level_kb = payload
-                await message.answer(level_text, reply_markup=level_kb)
-        else:
-            payload = await _manual_self_level_payload(
-                runtime,
-                family_repo,
-                family_id=family_id,
-                scope=scope,
-                scope_id=scope_id,
-            )
-            if payload is not None:
-                level_text, level_kb = payload
-                await message.answer(level_text, reply_markup=level_kb)
-    else:
-        await message.answer(f"Задача {success_title} добавлена")
-    await state.clear()
+    await _manual_fin_answer_final(message, state, ctx, family_repo, task)
 
 
 @router.message(F.text == "Отм. последнее выполнение")

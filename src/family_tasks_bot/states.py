@@ -21,6 +21,7 @@ class RuntimeTaskStates(StatesGroup):
     waiting_execution_confirm = State()
     waiting_custom_delay = State()
     waiting_manual_comment = State()
+    waiting_manual_completion_draft = State()
 
 
 class GroupStates(StatesGroup):
@@ -31,6 +32,7 @@ class GroupStates(StatesGroup):
 class StatsStates(StatesGroup):
     waiting_history_executor = State()
     waiting_history_datetime = State()
+    waiting_history_comment = State()
 
 
 class NavStates(StatesGroup):

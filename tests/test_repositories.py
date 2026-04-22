@@ -289,6 +289,31 @@ async def test_task_requires_comment_toggle_and_manual_comment_saved() -> None:
 
 
 @pytest.mark.asyncio
+async def test_add_manual_completion_explicit_completed_at() -> None:
+    conn = await _init_db()
+    planned = PlannedTaskRepository(conn)
+    runtime = TaskRuntimeRepository(conn)
+    task_id = await planned.create_task(1, "Timed task", 1)
+    at = "2024-06-15 12:30:45"
+    completion_id = await runtime.add_manual_completion(
+        1,
+        task_id,
+        1,
+        comment_text=None,
+        actor_user_id=1,
+        completed_at_utc=at,
+    )
+    async with conn.execute(
+        "SELECT datetime(completed_at) AS ca FROM task_completions WHERE id = ?",
+        (completion_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    assert row is not None
+    assert str(row["ca"]).startswith("2024-06-15")
+    await conn.close()
+
+
+@pytest.mark.asyncio
 async def test_alice_link_code_can_be_consumed_once() -> None:
     conn = await _init_db()
     users = UserRepository(conn)

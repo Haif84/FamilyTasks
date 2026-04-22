@@ -1055,14 +1055,66 @@ def _history_card_text(entry: dict, timezone_name: str) -> str:
     local_added_at = _to_family_local_timestamp(str(entry["added_at"]), timezone_name)
     local_updated_at = _to_family_local_timestamp(str(entry["history_updated_at"]), timezone_name)
     action = _format_action_label(str(entry["task_title"]), str(entry["completion_mode"]))
-    return (
-        f"Запись истории #{entry['completion_id']}\n"
-        f"Действие: {action}\n"
-        f"Исполнитель: {entry['member_display_name']}\n"
-        f"Дата/Время действия: {local_completed_at}\n"
-        f"Дата/Время добавления действия: {local_added_at}\n"
-        f"Дата/Время изменения истории: {local_updated_at}"
-    )
+    comment = str(entry.get("comment_text") or "").strip()
+    lines = [
+        f"Запись истории #{entry['completion_id']}",
+        f"Действие: {action}",
+        f"Исполнитель: {entry['member_display_name']}",
+        f"Дата/Время действия: {local_completed_at}",
+        f"Дата/Время добавления действия: {local_added_at}",
+        f"Дата/Время изменения истории: {local_updated_at}",
+    ]
+    if comment:
+        lines.append(f"Комментарий: {comment}")
+    return "\n".join(lines)
+
+
+def _history_norm_completed_at(value: str) -> str:
+    raw = (value or "").strip().replace("T", " ")
+    if not raw:
+        return ""
+    try:
+        parsed = datetime.strptime(raw[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return raw
+    return parsed.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _history_member_display_name(members: list[dict | object], user_id: int) -> str:
+    for member in members:
+        if int(member["user_id"]) == user_id:
+            return str(member["display_name"])
+    return str(user_id)
+
+
+async def _history_refresh_draft_card(
+    bot,
+    runtime: TaskRuntimeRepository,
+    family_repo,
+    *,
+    family_id: int,
+    draft: dict,
+    timezone_name: str,
+) -> None:
+    entry = await runtime.get_completion_entry(family_id, int(draft["completion_id"]))
+    if entry is None:
+        return
+    members = await family_repo.list_members_for_edit(family_id)
+    row = dict(entry)
+    row["member_display_name"] = _history_member_display_name(members, int(draft["executor_user_id"]))
+    row["completed_at"] = draft["completed_at_utc"]
+    row["comment_text"] = draft.get("comment") or ""
+    text = _history_card_text(row, timezone_name)
+    kb = _history_entry_actions_keyboard(int(draft["completion_id"]))
+    try:
+        await bot.edit_message_text(
+            text=text,
+            chat_id=int(draft["card_chat_id"]),
+            message_id=int(draft["card_message_id"]),
+            reply_markup=kb,
+        )
+    except TelegramBadRequest:
+        pass
 
 
 def _history_entry_actions_keyboard(completion_id: int) -> InlineKeyboardMarkup:
@@ -1070,6 +1122,8 @@ def _history_entry_actions_keyboard(completion_id: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Исполнитель", callback_data=f"histeditexec:{completion_id}")],
             [InlineKeyboardButton(text="Дата/время", callback_data=f"histedittime:{completion_id}")],
+            [InlineKeyboardButton(text="Комментарий", callback_data=f"histeditcomment:{completion_id}")],
+            [InlineKeyboardButton(text="Обновить", callback_data=f"histapply:{completion_id}")],
             [InlineKeyboardButton(text="Удалить", callback_data=f"histeditdelask:{completion_id}")],
             [InlineKeyboardButton(text="Назад", callback_data="histeditback")],
         ]
@@ -1129,7 +1183,30 @@ async def stats_history_edit_entry(callback: CallbackQuery, state: FSMContext) -
         return
     timezone_name = ctx.family_timezone or "UTC"
     kb = _history_entry_actions_keyboard(completion_id)
-    await callback.message.answer(_history_card_text(entry, timezone_name), reply_markup=kb)
+    sent = await callback.message.answer(_history_card_text(entry, timezone_name), reply_markup=kb)
+    comment_raw = entry["comment_text"] if "comment_text" in entry.keys() else None
+    comment = (str(comment_raw).strip() if comment_raw is not None else "") or ""
+    await state.update_data(
+        hist_edit_draft={
+            "completion_id": completion_id,
+            "card_message_id": sent.message_id,
+            "card_chat_id": sent.chat.id,
+            "executor_user_id": int(entry["member_user_id"]),
+            "completed_at_utc": _history_norm_completed_at(str(entry["completed_at"])),
+            "comment": comment,
+        }
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("histeditexecback:"))
+async def stats_history_edit_executor_picker_back(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is not None:
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            pass
+    await state.set_state(None)
     await callback.answer()
 
 
@@ -1158,7 +1235,7 @@ async def stats_history_edit_executor_start(callback: CallbackQuery, state: FSMC
         ]
         for member in members
     ]
-    buttons.append([InlineKeyboardButton(text="Назад", callback_data=f"histedit:{completion_id}")])
+    buttons.append([InlineKeyboardButton(text="Назад", callback_data=f"histeditexecback:{completion_id}")])
     await state.set_state(StatsStates.waiting_history_executor)
     await state.update_data(history_completion_id=completion_id)
     await callback.message.answer(
@@ -1181,18 +1258,128 @@ async def stats_history_edit_executor_save(callback: CallbackQuery, state: FSMCo
     if not ctx.is_admin:
         await callback.answer("Нет прав.", show_alert=True)
         return
-    runtime = TaskRuntimeRepository(db)
-    updated = await runtime.update_completion_executor(ctx.family_id, completion_id, new_user_id)
-    if not updated:
-        await callback.answer("Не удалось изменить исполнителя.", show_alert=True)
+    data = await state.get_data()
+    draft = data.get("hist_edit_draft")
+    if not isinstance(draft, dict) or int(draft.get("completion_id", 0)) != completion_id:
+        await callback.answer("Сначала откройте запись.", show_alert=True)
         return
+    draft["executor_user_id"] = new_user_id
+    await state.update_data(hist_edit_draft=draft)
+    if callback.message is not None:
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            pass
+    await state.set_state(None)
+    runtime = TaskRuntimeRepository(db)
+    timezone_name = ctx.family_timezone or "UTC"
+    await _history_refresh_draft_card(
+        callback.bot,
+        runtime,
+        family_repo,
+        family_id=ctx.family_id,
+        draft=draft,
+        timezone_name=timezone_name,
+    )
+    await callback.answer("Исполнитель изменён в черновике. Нажмите «Обновить», чтобы сохранить в базе.")
+
+
+@router.callback_query(F.data.startswith("histapply:"))
+async def stats_history_edit_apply(callback: CallbackQuery, state: FSMContext) -> None:
+    completion_id = int(callback.data.split(":")[1])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    if not ctx.is_admin:
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+    data = await state.get_data()
+    draft = data.get("hist_edit_draft")
+    if not isinstance(draft, dict) or int(draft.get("completion_id", 0)) != completion_id:
+        await callback.answer("Сначала откройте запись.", show_alert=True)
+        return
+    runtime = TaskRuntimeRepository(db)
     entry = await runtime.get_completion_entry(ctx.family_id, completion_id)
-    await _clear_state_keep_stats_context(state)
-    if entry is not None:
-        timezone_name = ctx.family_timezone or "UTC"
-        kb = _history_entry_actions_keyboard(completion_id)
-        await callback.message.answer(_history_card_text(entry, timezone_name), reply_markup=kb)
-    await callback.answer("Исполнитель обновлен.")
+    if entry is None:
+        await callback.answer("Запись не найдена.", show_alert=True)
+        return
+    orig_ex = int(entry["member_user_id"])
+    orig_at = _history_norm_completed_at(str(entry["completed_at"]))
+    raw_orig_cmt = entry["comment_text"] if "comment_text" in entry.keys() else None
+    orig_cmt = (str(raw_orig_cmt).strip() if raw_orig_cmt is not None else "") or ""
+    new_ex = int(draft["executor_user_id"])
+    new_at = _history_norm_completed_at(str(draft["completed_at_utc"]))
+    new_cmt = (str(draft.get("comment") or "")).strip()
+    changed = False
+    if new_ex != orig_ex:
+        if not await runtime.update_completion_executor(ctx.family_id, completion_id, new_ex):
+            await callback.answer("Не удалось изменить исполнителя.", show_alert=True)
+            return
+        changed = True
+    if new_at != orig_at:
+        if not await runtime.update_completion_datetime(ctx.family_id, completion_id, new_at):
+            await callback.answer("Не удалось изменить дату/время.", show_alert=True)
+            return
+        changed = True
+    if new_cmt != orig_cmt:
+        if not await runtime.update_completion_comment(ctx.family_id, completion_id, new_cmt or None):
+            await callback.answer("Не удалось изменить комментарий.", show_alert=True)
+            return
+        changed = True
+    if not changed:
+        await callback.answer("Нет изменений для сохранения.")
+        return
+    entry2 = await runtime.get_completion_entry(ctx.family_id, completion_id)
+    if entry2 is None:
+        await callback.answer("Запись не найдена после сохранения.", show_alert=True)
+        return
+    c2 = entry2["comment_text"] if "comment_text" in entry2.keys() else None
+    comment2 = (str(c2).strip() if c2 is not None else "") or ""
+    draft2 = {
+        "completion_id": completion_id,
+        "card_message_id": int(draft["card_message_id"]),
+        "card_chat_id": int(draft["card_chat_id"]),
+        "executor_user_id": int(entry2["member_user_id"]),
+        "completed_at_utc": _history_norm_completed_at(str(entry2["completed_at"])),
+        "comment": comment2,
+    }
+    await state.update_data(hist_edit_draft=draft2)
+    timezone_name = ctx.family_timezone or "UTC"
+    await _history_refresh_draft_card(
+        callback.bot,
+        runtime,
+        family_repo,
+        family_id=ctx.family_id,
+        draft=draft2,
+        timezone_name=timezone_name,
+    )
+    await callback.answer("Сохранено в базе.")
+
+
+@router.callback_query(F.data.startswith("histeditcomment:"))
+async def stats_history_edit_comment_start(callback: CallbackQuery, state: FSMContext) -> None:
+    completion_id = int(callback.data.split(":")[1])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    if not ctx.is_admin:
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+    data = await state.get_data()
+    draft = data.get("hist_edit_draft")
+    if not isinstance(draft, dict) or int(draft.get("completion_id", 0)) != completion_id:
+        await callback.answer("Сначала откройте запись.", show_alert=True)
+        return
+    await state.set_state(StatsStates.waiting_history_comment)
+    await state.update_data(history_comment_completion_id=completion_id)
+    await callback.message.answer(
+        "Введите новый комментарий (пустое сообщение — очистить комментарий; «Отмена» — выйти без изменений):"
+    )
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("histedittime:"))
@@ -1211,11 +1398,17 @@ async def stats_history_edit_time_start(callback: CallbackQuery, state: FSMConte
         await callback.answer("Запись не найдена.", show_alert=True)
         return
     timezone_name = ctx.family_timezone or "UTC"
-    current_local = _to_family_local_timestamp(str(entry["completed_at"]), timezone_name)
+    data = await state.get_data()
+    draft = data.get("hist_edit_draft")
+    if isinstance(draft, dict) and int(draft.get("completion_id", 0)) == completion_id:
+        current_local = _to_family_local_timestamp(str(draft["completed_at_utc"]), timezone_name)
+    else:
+        current_local = _to_family_local_timestamp(str(entry["completed_at"]), timezone_name)
     await state.set_state(StatsStates.waiting_history_datetime)
     await state.update_data(history_completion_id=completion_id)
     await callback.message.answer(
-        f"Текущее время действия: {current_local}\nВведите новое время в формате YYYY-MM-DD HH:MM:"
+        f"Текущее время действия (черновик): {current_local}\n"
+        f"Введите новое время в формате YYYY-MM-DD HH:MM (локальное время семьи) или «Отмена»:"
     )
     await callback.answer()
 
@@ -1233,6 +1426,10 @@ async def stats_history_edit_time_save(message: Message, state: FSMContext) -> N
         await message.answer("Эта команда доступна только администраторам.")
         return
     raw_value = (message.text or "").strip()
+    if raw_value.lower() == "отмена":
+        await state.set_state(None)
+        await message.answer("Изменение времени отменено.")
+        return
     timezone_name = ctx.family_timezone or "UTC"
     new_completed_at = _parse_local_datetime_to_utc(raw_value, timezone_name)
     if new_completed_at is None:
@@ -1241,21 +1438,68 @@ async def stats_history_edit_time_save(message: Message, state: FSMContext) -> N
     data = await state.get_data()
     completion_id = int(data.get("history_completion_id", 0))
     if completion_id <= 0:
-        await _clear_state_keep_stats_context(state)
+        await state.set_state(None)
         await message.answer("Не удалось определить запись истории.")
         return
-    runtime = TaskRuntimeRepository(db)
-    updated = await runtime.update_completion_datetime(ctx.family_id, completion_id, new_completed_at)
-    if not updated:
-        await _clear_state_keep_stats_context(state)
-        await message.answer("Не удалось обновить время действия.")
+    draft = data.get("hist_edit_draft")
+    if not isinstance(draft, dict) or int(draft.get("completion_id", 0)) != completion_id:
+        await state.set_state(None)
+        await message.answer("Черновик записи не найден. Откройте запись снова.")
         return
-    entry = await runtime.get_completion_entry(ctx.family_id, completion_id)
-    await _clear_state_keep_stats_context(state)
-    await message.answer("Время действия обновлено.")
-    if entry is not None:
-        kb = _history_entry_actions_keyboard(completion_id)
-        await message.answer(_history_card_text(entry, timezone_name), reply_markup=kb)
+    draft["completed_at_utc"] = _history_norm_completed_at(new_completed_at)
+    await state.update_data(hist_edit_draft=draft, history_completion_id=None)
+    await state.set_state(None)
+    runtime = TaskRuntimeRepository(db)
+    await _history_refresh_draft_card(
+        message.bot,
+        runtime,
+        family_repo,
+        family_id=ctx.family_id,
+        draft=draft,
+        timezone_name=timezone_name,
+    )
+    await message.answer("Время изменено в черновике. Нажмите «Обновить», чтобы сохранить в базе.")
+
+
+@router.message(StatsStates.waiting_history_comment)
+async def stats_history_edit_comment_save(message: Message, state: FSMContext) -> None:
+    raw = (message.text or "").strip()
+    if raw.lower() == "отмена":
+        await state.set_state(None)
+        await state.update_data(history_comment_completion_id=None)
+        await message.answer("Редактирование комментария отменено.")
+        return
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+    if ctx.family_id is None:
+        await state.set_state(None)
+        await message.answer("Вы пока не добавлены в семью.")
+        return
+    if not ctx.is_admin:
+        await state.set_state(None)
+        await message.answer("Эта команда доступна только администраторам.")
+        return
+    data = await state.get_data()
+    completion_id = int(data.get("history_comment_completion_id", 0))
+    draft = data.get("hist_edit_draft")
+    if completion_id <= 0 or not isinstance(draft, dict) or int(draft.get("completion_id", 0)) != completion_id:
+        await state.set_state(None)
+        await message.answer("Не удалось определить запись истории.")
+        return
+    draft["comment"] = raw
+    await state.update_data(hist_edit_draft=draft, history_comment_completion_id=None)
+    await state.set_state(None)
+    runtime = TaskRuntimeRepository(db)
+    timezone_name = ctx.family_timezone or "UTC"
+    await _history_refresh_draft_card(
+        message.bot,
+        runtime,
+        family_repo,
+        family_id=ctx.family_id,
+        draft=draft,
+        timezone_name=timezone_name,
+    )
+    await message.answer("Комментарий изменён в черновике. Нажмите «Обновить», чтобы сохранить в базе.")
 
 
 @router.callback_query(F.data.startswith("histeditdelask:"))

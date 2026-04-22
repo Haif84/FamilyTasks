@@ -1067,24 +1067,44 @@ class TaskRuntimeRepository:
         *,
         comment_text: str | None = None,
         actor_user_id: int | None = None,
+        completed_at_utc: str | None = None,
     ) -> int:
-        cur = await self.conn.execute(
-            """
-            INSERT INTO task_completions (
-                task_instance_id,
-                family_id,
-                planned_task_id,
-                completed_by,
-                completed_at,
-                comment_text,
-                added_at,
-                history_updated_at,
-                completion_mode
+        if completed_at_utc is not None and (completed_at_utc or "").strip():
+            cur = await self.conn.execute(
+                """
+                INSERT INTO task_completions (
+                    task_instance_id,
+                    family_id,
+                    planned_task_id,
+                    completed_by,
+                    completed_at,
+                    comment_text,
+                    added_at,
+                    history_updated_at,
+                    completion_mode
+                )
+                VALUES (NULL, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'manual')
+                """,
+                (family_id, planned_task_id, completed_by_user_id, completed_at_utc.strip(), comment_text),
             )
-            VALUES (NULL, ?, ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'manual')
-            """,
-            (family_id, planned_task_id, completed_by_user_id, comment_text),
-        )
+        else:
+            cur = await self.conn.execute(
+                """
+                INSERT INTO task_completions (
+                    task_instance_id,
+                    family_id,
+                    planned_task_id,
+                    completed_by,
+                    completed_at,
+                    comment_text,
+                    added_at,
+                    history_updated_at,
+                    completion_mode
+                )
+                VALUES (NULL, ?, ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'manual')
+                """,
+                (family_id, planned_task_id, completed_by_user_id, comment_text),
+            )
         completion_id = int(cur.lastrowid)
         undo_actor_user_id = actor_user_id if actor_user_id is not None else completed_by_user_id
         await self.conn.execute(
@@ -1447,6 +1467,7 @@ class TaskRuntimeRepository:
                 tc.added_at,
                 tc.history_updated_at,
                 tc.completion_mode,
+                tc.comment_text,
                 pt.title AS task_title,
                 COALESCE(pt.effort_stars, 1) AS effort_stars,
                 u.display_name AS member_display_name
@@ -1494,6 +1515,18 @@ class TaskRuntimeRepository:
             WHERE family_id = ? AND id = ?
             """,
             (new_completed_at_utc, family_id, completion_id),
+        )
+        await self.conn.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def update_completion_comment(self, family_id: int, completion_id: int, comment_text: str | None) -> bool:
+        cur = await self.conn.execute(
+            """
+            UPDATE task_completions
+            SET comment_text = ?, history_updated_at = CURRENT_TIMESTAMP
+            WHERE family_id = ? AND id = ?
+            """,
+            (comment_text, family_id, completion_id),
         )
         await self.conn.commit()
         return (cur.rowcount or 0) > 0
