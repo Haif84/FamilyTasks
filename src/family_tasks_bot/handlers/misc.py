@@ -109,26 +109,25 @@ def _build_day_pages(
 def _build_day_nav_markup(
     day_pages: list[dict],
     day_index: int,
-    callback_builder,
+    day_callback_builder,
+    back_callback_data: str,
 ) -> InlineKeyboardMarkup | None:
-    nav: list[InlineKeyboardButton] = []
+    left_button = InlineKeyboardButton(text=" ", callback_data="statsnoop")
+    right_button = InlineKeyboardButton(text=" ", callback_data="statsnoop")
     if day_index + 1 < len(day_pages):
         target = day_pages[day_index + 1]["weekday_cap"]
-        nav.append(
-            InlineKeyboardButton(
-                text=f"Назад ({target}, более ранние)",
-                callback_data=callback_builder(day_index + 1),
-            )
+        left_button = InlineKeyboardButton(
+            text=f"< ({target})",
+            callback_data=day_callback_builder(day_index + 1),
         )
     if day_index > 0:
         target = day_pages[day_index - 1]["weekday_cap"]
-        nav.append(
-            InlineKeyboardButton(
-                text=f"Вперед ({target}, более поздние)",
-                callback_data=callback_builder(day_index - 1),
-            )
+        right_button = InlineKeyboardButton(
+            text=f"({target}) >",
+            callback_data=day_callback_builder(day_index - 1),
         )
-    return InlineKeyboardMarkup(inline_keyboard=[nav]) if nav else None
+    middle_button = InlineKeyboardButton(text="Назад", callback_data=back_callback_data)
+    return InlineKeyboardMarkup(inline_keyboard=[[left_button, middle_button, right_button]])
 
 
 def _render_day_page_lines(
@@ -447,7 +446,12 @@ async def _send_recent_actions(
         ),
         "История пока пуста.",
     )
-    kb = _build_day_nav_markup(day_pages, normalized_day_index, lambda target_idx: f"statsg:{target_idx}")
+    kb = _build_day_nav_markup(
+        day_pages,
+        normalized_day_index,
+        lambda target_idx: f"statsg:{target_idx}",
+        "statsback:global",
+    )
     await message.answer("\n".join(lines), reply_markup=kb)
 
 
@@ -476,7 +480,12 @@ async def stats_global_callback(callback: CallbackQuery) -> None:
         ),
         "История пока пуста.",
     )
-    kb = _build_day_nav_markup(day_pages, normalized_day_index, lambda target_idx: f"statsg:{target_idx}")
+    kb = _build_day_nav_markup(
+        day_pages,
+        normalized_day_index,
+        lambda target_idx: f"statsg:{target_idx}",
+        "statsback:global",
+    )
     await callback.message.edit_text("\n".join(lines), reply_markup=kb)
     await callback.answer()
 
@@ -506,7 +515,12 @@ async def _render_member_actions(
         _member_tail,
         "Действий пока нет.",
     )
-    kb = _build_day_nav_markup(day_pages, normalized_day_index, lambda target_idx: f"statsm:{user_id}:{target_idx}")
+    kb = _build_day_nav_markup(
+        day_pages,
+        normalized_day_index,
+        lambda target_idx: f"statsm:{user_id}:{target_idx}",
+        "statsback:member",
+    )
     await callback.message.edit_text("\n".join(lines), reply_markup=kb)
 
 
@@ -517,6 +531,7 @@ async def _render_task_actions(
     day_index: int,
     runtime: TaskRuntimeRepository,
     timezone_name: str,
+    source_token: str = "root",
 ) -> None:
     rows = await runtime.list_recent_actions_by_task_all(family_id, task_id)
     day_pages = _build_day_pages(rows, timezone_name, reverse_input=True)
@@ -527,7 +542,12 @@ async def _render_task_actions(
         lambda row: f"— {row['display_name']}",
         "Действий пока нет.",
     )
-    kb = _build_day_nav_markup(day_pages, normalized_day_index, lambda target_idx: f"statst:{task_id}:{target_idx}")
+    kb = _build_day_nav_markup(
+        day_pages,
+        normalized_day_index,
+        lambda target_idx: f"statst:{task_id}:{target_idx}:{source_token}",
+        f"statsback:task:{source_token}",
+    )
     await callback.message.edit_text("\n".join(lines), reply_markup=kb)
 
 
@@ -541,7 +561,7 @@ async def _build_stats_task_root_picker(
     tasks_without_group = [task for task in tasks if task["group_id"] is None]
     rows: list[list[InlineKeyboardButton]] = []
     for task in tasks_without_group:
-        rows.append([InlineKeyboardButton(text=str(task["title"]), callback_data=f"statst:{task['id']}:0")])
+        rows.append([InlineKeyboardButton(text=str(task["title"]), callback_data=f"statst:{task['id']}:0:root")])
     for group in groups:
         group_id = int(group["id"])
         has_tasks = any(task["group_id"] is not None and int(task["group_id"]) == group_id for task in tasks)
@@ -572,9 +592,11 @@ async def stats_member_callback(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("statst:"))
 async def stats_task_callback(callback: CallbackQuery) -> None:
-    _, task_id_raw, day_index_raw = callback.data.split(":")
+    parts = callback.data.split(":")
+    _, task_id_raw, day_index_raw, *source_parts = parts
     task_id = int(task_id_raw)
     day_index = max(0, int(day_index_raw))
+    source_token = source_parts[0] if source_parts else "root"
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if ctx.family_id is None:
@@ -582,7 +604,7 @@ async def stats_task_callback(callback: CallbackQuery) -> None:
         return
     runtime = TaskRuntimeRepository(db)
     timezone_name = ctx.family_timezone or "UTC"
-    await _render_task_actions(callback, ctx.family_id, task_id, day_index, runtime, timezone_name)
+    await _render_task_actions(callback, ctx.family_id, task_id, day_index, runtime, timezone_name, source_token)
     await callback.answer()
 
 
@@ -624,7 +646,7 @@ async def stats_task_group_callback(callback: CallbackQuery) -> None:
     tasks = await repo.list_tasks_by_group(ctx.family_id, group_id)
     rows: list[list[InlineKeyboardButton]] = []
     for task in tasks:
-        rows.append([InlineKeyboardButton(text=str(task["title"]), callback_data=f"statst:{task['id']}:0")])
+        rows.append([InlineKeyboardButton(text=str(task["title"]), callback_data=f"statst:{task['id']}:0:g{group_id}")])
     if not rows:
         rows = [[InlineKeyboardButton(text="Нет задач в группе", callback_data="noop")]]
     rows.append([InlineKeyboardButton(text="Назад", callback_data="statstroot")])
@@ -646,6 +668,80 @@ async def stats_task_cancel_callback(callback: CallbackQuery) -> None:
         await callback.message.edit_text("Операция отменена.")
     except TelegramBadRequest:
         await callback.message.answer("Операция отменена.")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "statsnoop")
+async def stats_noop_callback(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+
+@router.callback_query(F.data == "statsback:global")
+async def stats_back_global(callback: CallbackQuery) -> None:
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    await callback.message.answer("Меню статистики:", reply_markup=stats_menu(is_admin=ctx.is_admin))
+    await callback.answer()
+
+
+def _member_picker_markup(members: list) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text=str(member["display_name"]), callback_data=f"statsm:{member['user_id']}:0")]
+        for member in members
+    ]
+    return InlineKeyboardMarkup(
+        inline_keyboard=buttons or [[InlineKeyboardButton(text="Нет участников", callback_data="noop")]]
+    )
+
+
+@router.callback_query(F.data == "statsback:member")
+async def stats_back_member(callback: CallbackQuery) -> None:
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    members = await family_repo.list_members_for_edit(ctx.family_id)
+    try:
+        await callback.message.edit_text("Выберите участника:", reply_markup=_member_picker_markup(members))
+    except TelegramBadRequest:
+        await callback.message.answer("Выберите участника:", reply_markup=_member_picker_markup(members))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("statsback:task:"))
+async def stats_back_task(callback: CallbackQuery) -> None:
+    source_token = callback.data.split(":")[2]
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    repo = PlannedTaskRepository(db)
+    if source_token == "root":
+        text, kb = await _build_stats_task_root_picker(repo, family_repo, ctx.family_id)
+    elif source_token.startswith("g") and source_token[1:].isdigit():
+        group_id = int(source_token[1:])
+        group = await family_repo.get_group(ctx.family_id, group_id)
+        if group is None:
+            await callback.answer("Группа не найдена.", show_alert=True)
+            return
+        tasks = await repo.list_tasks_by_group(ctx.family_id, group_id)
+        rows: list[list[InlineKeyboardButton]] = []
+        for task in tasks:
+            rows.append([InlineKeyboardButton(text=str(task["title"]), callback_data=f"statst:{task['id']}:0:g{group_id}")])
+        if not rows:
+            rows = [[InlineKeyboardButton(text="Нет задач в группе", callback_data="noop")]]
+        rows.append([InlineKeyboardButton(text="Назад", callback_data="statstroot")])
+        rows.append([InlineKeyboardButton(text="Отмена", callback_data="statstcancel")])
+        text = f'Группа "{group["name"]}": выберите задачу.'
+        kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    else:
+        text, kb = await _build_stats_task_root_picker(repo, family_repo, ctx.family_id)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=kb)
     await callback.answer()
 
 
