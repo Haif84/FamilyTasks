@@ -1334,11 +1334,13 @@ class TaskRuntimeRepository:
         async with self.conn.execute(
             """
             SELECT
+                tc.id AS completion_id,
                 tc.completed_at,
                 u.display_name AS member_display_name,
                 COALESCE(pt.effort_stars, 1) AS effort_stars,
                 pt.title AS task_title,
-                tc.comment_text
+                tc.comment_text,
+                tc.completion_mode
             FROM task_completions tc
             JOIN users u ON u.id = tc.completed_by
             JOIN planned_tasks pt ON pt.id = tc.planned_task_id
@@ -1368,9 +1370,16 @@ class TaskRuntimeRepository:
     async def list_recent_actions_by_task_all(self, family_id: int, task_id: int) -> list[aiosqlite.Row]:
         async with self.conn.execute(
             """
-            SELECT tc.completed_at, u.display_name
+            SELECT
+                tc.id AS completion_id,
+                tc.completed_at,
+                u.display_name AS member_display_name,
+                pt.title AS task_title,
+                COALESCE(pt.effort_stars, 1) AS effort_stars,
+                tc.completion_mode
             FROM task_completions tc
             JOIN users u ON u.id = tc.completed_by
+            JOIN planned_tasks pt ON pt.id = tc.planned_task_id
             WHERE tc.family_id = ? AND tc.planned_task_id = ?
             ORDER BY tc.completed_at DESC, tc.id DESC
             """,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -20,7 +21,7 @@ router = Router(name="misc")
 QUIET_RE = re.compile(r"^/quiet\s+(\d{2}:\d{2})-(\d{2}:\d{2})(?:\s+(all|[0-6]))?$")
 STATS_RE = re.compile(r"^/stats(?:\s+(day|week|month))?$")
 PAGE_SIZE = 10
-HISTORY_LIMIT = 10
+STATS_HISTORY_CONTEXT_KEY = "stats_history_context"
 WEEKDAY_SHORT_RU = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 
 
@@ -153,15 +154,6 @@ def _history_line(entry: dict, timezone_name: str) -> str:
     return f"- {local_completed_at} | {entry['task_title']} | {entry['member_display_name']} | {effort_stars}★"
 
 
-def _history_button_label(entry: dict, timezone_name: str) -> str:
-    local_completed_at = _to_family_local_timestamp(str(entry["completed_at"]), timezone_name)
-    action = _format_action_label(str(entry["task_title"]), str(entry["completion_mode"]))
-    label = f"{local_completed_at} | {action} | {entry['member_display_name']}"
-    if len(label) > 60:
-        return f"{label[:57]}..."
-    return label
-
-
 def _parse_local_datetime_to_utc(value: str, timezone_name: str) -> str | None:
     raw = (value or "").strip()
     try:
@@ -187,40 +179,164 @@ def _format_action_label(task_title: str, completion_mode: str) -> str:
     return f"{task_title} [{completion_mode}]"
 
 
-def _history_line(entry: dict, timezone_name: str) -> str:
-    local_completed_at = _to_family_local_timestamp(str(entry["completed_at"]), timezone_name)
-    effort_stars = int(entry["effort_stars"]) if hasattr(entry, "keys") and "effort_stars" in entry.keys() else 1
-    return f"- {local_completed_at} | {entry['task_title']} | {entry['member_display_name']} | {effort_stars}★"
+def _default_stats_history_context() -> dict:
+    return {
+        "mode": "global",
+        "day_index": 0,
+        "user_id": None,
+        "task_id": None,
+        "source_token": "root",
+        "member_display_name": None,
+        "task_title": None,
+    }
 
 
-def _history_button_label(entry: dict, timezone_name: str) -> str:
-    local_completed_at = _to_family_local_timestamp(str(entry["completed_at"]), timezone_name)
-    action = _format_action_label(str(entry["task_title"]), str(entry["completion_mode"]))
-    label = f"{local_completed_at} | {action} | {entry['member_display_name']}"
-    if len(label) > 60:
-        return f"{label[:57]}..."
-    return label
+async def _get_stats_history_context(state: FSMContext) -> dict:
+    data = await state.get_data()
+    raw = data.get(STATS_HISTORY_CONTEXT_KEY)
+    merged = _default_stats_history_context()
+    if isinstance(raw, dict):
+        merged.update(raw)
+    return merged
 
 
-def _parse_local_datetime_to_utc(value: str, timezone_name: str) -> str | None:
-    raw = (value or "").strip()
-    try:
-        local_naive = datetime.strptime(raw, "%Y-%m-%d %H:%M")
-    except ValueError:
-        return None
-    tzinfo = _family_tzinfo(timezone_name)
-    local_dt = local_naive.replace(tzinfo=tzinfo)
-    utc_dt = local_dt.astimezone(timezone.utc)
-    return utc_dt.strftime("%Y-%m-%d %H:%M:%S")
+async def _save_stats_history_context(state: FSMContext, **kwargs: object) -> None:
+    cur = await _get_stats_history_context(state)
+    cur.update(kwargs)
+    await state.update_data({STATS_HISTORY_CONTEXT_KEY: cur})
 
 
-def _groups_editor_keyboard(groups: list) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text=f"{group['sort_order']}. {group['name']}", callback_data=f"groupedit:{group['id']}")]
-        for group in groups
-    ]
-    rows.append([InlineKeyboardButton(text="Добавить группу", callback_data="groupadd")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+async def _clear_state_keep_stats_context(state: FSMContext) -> None:
+    preserved = (await state.get_data()).get(STATS_HISTORY_CONTEXT_KEY)
+    await state.clear()
+    if isinstance(preserved, dict):
+        await state.update_data({STATS_HISTORY_CONTEXT_KEY: preserved})
+
+
+def _truncate_button_text(text: str, max_len: int = 60) -> str:
+    if len(text) <= max_len:
+        return text
+    return f"{text[: max_len - 3]}..."
+
+
+def _history_edit_row_label(mode: str, time_part: str, entry: dict) -> str:
+    task_action = _format_action_label(str(entry["task_title"]), str(entry["completion_mode"]))
+    executor = str(entry["member_display_name"])
+    if mode == "member":
+        line = f"{time_part} - {task_action}"
+    elif mode == "task":
+        line = f"{time_part} - {executor}"
+    else:
+        line = f"{time_part} - {task_action} - {executor}"
+    return _truncate_button_text(line)
+
+
+def _history_edit_header_text(page: dict, ctx: dict) -> str:
+    day_key = str(page["day_key"])
+    wc = str(page["weekday_cap"])
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", day_key):
+        try:
+            d = datetime.strptime(day_key, "%Y-%m-%d").date()
+            dt_suffix = d.strftime("%d.%m.%Y")
+        except ValueError:
+            dt_suffix = day_key
+    else:
+        dt_suffix = day_key
+    parts = [f"{wc} {dt_suffix}"]
+    mode = str(ctx.get("mode") or "global")
+    if mode == "member" and ctx.get("member_display_name"):
+        parts.append(str(ctx["member_display_name"]))
+    if mode == "task" and ctx.get("task_title"):
+        parts.append(str(ctx["task_title"]))
+    return _truncate_button_text(" - ".join(parts), max_len=120)
+
+
+def _hist_nav_day_callback_builder(ctx: dict) -> Callable[[int], str]:
+    mode = str(ctx.get("mode") or "global")
+
+    def builder(target_idx: int) -> str:
+        if mode == "global":
+            return f"hedg:{target_idx}"
+        if mode == "member":
+            return f"hedm:{int(ctx['user_id'])}:{target_idx}"
+        tid = int(ctx["task_id"])
+        src = str(ctx.get("source_token") or "root")
+        return f"hedt:{tid}:{src}:{target_idx}"
+
+    return builder
+
+
+def _hist_nav_back_callback_data(ctx: dict) -> str:
+    mode = str(ctx.get("mode") or "global")
+    if mode == "global":
+        return "statsback:global"
+    if mode == "member":
+        return "statsback:member"
+    return f"statsback:task:{ctx.get('source_token') or 'root'}"
+
+
+async def _load_day_pages_for_stats_context(
+    runtime: TaskRuntimeRepository, family_id: int, ctx: dict, timezone_name: str
+) -> list[dict]:
+    mode = str(ctx.get("mode") or "global")
+    if mode == "member":
+        rows = await runtime.list_recent_actions_by_member_all(family_id, int(ctx["user_id"]))
+    elif mode == "task":
+        rows = await runtime.list_recent_actions_by_task_all(family_id, int(ctx["task_id"]))
+    else:
+        rows = await runtime.list_recent_actions_all(family_id)
+    return _build_day_pages(rows, timezone_name, reverse_input=True)
+
+
+async def _build_history_edit_markup_for_context(
+    runtime: TaskRuntimeRepository,
+    family_id: int,
+    ctx: dict,
+    timezone_name: str,
+) -> tuple[InlineKeyboardMarkup, int]:
+    day_pages = await _load_day_pages_for_stats_context(runtime, family_id, ctx, timezone_name)
+    day_index = int(ctx.get("day_index") or 0)
+    if day_pages:
+        normalized = max(0, min(day_index, len(day_pages) - 1))
+    else:
+        normalized = 0
+    mode = str(ctx.get("mode") or "global")
+    rows_kb: list[list[InlineKeyboardButton]] = []
+    if day_pages:
+        page = day_pages[normalized]
+        rows_kb.append(
+            [InlineKeyboardButton(text=_history_edit_header_text(page, ctx), callback_data="noop")]
+        )
+        for time_part, entry in page["items"]:
+            cid = int(entry["completion_id"])
+            label = _history_edit_row_label(mode, time_part, entry)
+            rows_kb.append([InlineKeyboardButton(text=label, callback_data=f"histedit:{cid}")])
+    else:
+        rows_kb.append([InlineKeyboardButton(text="История пуста", callback_data="noop")])
+    nav = _build_day_nav_markup(
+        day_pages,
+        normalized,
+        _hist_nav_day_callback_builder(ctx),
+        _hist_nav_back_callback_data(ctx),
+    )
+    if nav is not None:
+        rows_kb.extend(nav.inline_keyboard)
+    return InlineKeyboardMarkup(inline_keyboard=rows_kb), normalized
+
+
+HISTORY_EDIT_PROMPT = "Выберите запись истории для правки:"
+
+
+async def _prepare_history_edit_reply_markup(
+    state: FSMContext,
+    runtime: TaskRuntimeRepository,
+    family_id: int,
+    timezone_name: str,
+) -> InlineKeyboardMarkup:
+    ctx = await _get_stats_history_context(state)
+    kb, normalized = await _build_history_edit_markup_for_context(runtime, family_id, ctx, timezone_name)
+    await _save_stats_history_context(state, day_index=normalized)
+    return kb
 
 
 @router.message(F.text == "Прочее")
@@ -310,7 +426,7 @@ async def statistics(message: Message, state: FSMContext) -> None:
     await state.set_state(NavStates.in_stats_menu)
     runtime = TaskRuntimeRepository(db)
     timezone_name = ctx.family_timezone or "UTC"
-    await _send_recent_actions(message, runtime, ctx.family_id, timezone_name)
+    await _send_recent_actions(message, runtime, ctx.family_id, timezone_name, state)
     await message.answer("Меню статистики:", reply_markup=stats_menu(is_admin=ctx.is_admin))
 
 
@@ -432,6 +548,7 @@ async def _send_recent_actions(
     runtime: TaskRuntimeRepository,
     family_id: int,
     timezone_name: str,
+    state: FSMContext,
     day_index: int = 0,
 ) -> None:
     rows = await runtime.list_recent_actions_all(family_id)
@@ -453,10 +570,20 @@ async def _send_recent_actions(
         "statsback:global",
     )
     await message.answer("\n".join(lines), reply_markup=kb)
+    await _save_stats_history_context(
+        state,
+        mode="global",
+        day_index=normalized_day_index,
+        user_id=None,
+        task_id=None,
+        source_token="root",
+        member_display_name=None,
+        task_title=None,
+    )
 
 
 @router.callback_query(F.data.startswith("statsg:"))
-async def stats_global_callback(callback: CallbackQuery) -> None:
+async def stats_global_callback(callback: CallbackQuery, state: FSMContext) -> None:
     if callback.message is None:
         await callback.answer()
         return
@@ -487,6 +614,16 @@ async def stats_global_callback(callback: CallbackQuery) -> None:
         "statsback:global",
     )
     await callback.message.edit_text("\n".join(lines), reply_markup=kb)
+    await _save_stats_history_context(
+        state,
+        mode="global",
+        day_index=normalized_day_index,
+        user_id=None,
+        task_id=None,
+        source_token="root",
+        member_display_name=None,
+        task_title=None,
+    )
     await callback.answer()
 
 
@@ -497,6 +634,8 @@ async def _render_member_actions(
     day_index: int,
     runtime: TaskRuntimeRepository,
     timezone_name: str,
+    state: FSMContext,
+    member_display_name: str,
 ) -> None:
     rows = await runtime.list_recent_actions_by_member_all(family_id, user_id)
     day_pages = _build_day_pages(rows, timezone_name, reverse_input=True)
@@ -522,6 +661,16 @@ async def _render_member_actions(
         "statsback:member",
     )
     await callback.message.edit_text("\n".join(lines), reply_markup=kb)
+    await _save_stats_history_context(
+        state,
+        mode="member",
+        day_index=normalized_day_index,
+        user_id=user_id,
+        member_display_name=member_display_name,
+        task_id=None,
+        task_title=None,
+        source_token="root",
+    )
 
 
 async def _render_task_actions(
@@ -531,6 +680,8 @@ async def _render_task_actions(
     day_index: int,
     runtime: TaskRuntimeRepository,
     timezone_name: str,
+    state: FSMContext,
+    task_title: str,
     source_token: str = "root",
 ) -> None:
     rows = await runtime.list_recent_actions_by_task_all(family_id, task_id)
@@ -539,7 +690,7 @@ async def _render_task_actions(
         "Последние действия по задаче:",
         day_pages,
         day_index,
-        lambda row: f"— {row['display_name']}",
+        lambda row: f"— {row['member_display_name']}",
         "Действий пока нет.",
     )
     kb = _build_day_nav_markup(
@@ -549,6 +700,16 @@ async def _render_task_actions(
         f"statsback:task:{source_token}",
     )
     await callback.message.edit_text("\n".join(lines), reply_markup=kb)
+    await _save_stats_history_context(
+        state,
+        mode="task",
+        day_index=normalized_day_index,
+        task_id=task_id,
+        task_title=task_title,
+        source_token=source_token,
+        user_id=None,
+        member_display_name=None,
+    )
 
 
 async def _build_stats_task_root_picker(
@@ -575,7 +736,7 @@ async def _build_stats_task_root_picker(
 
 
 @router.callback_query(F.data.startswith("statsm:"))
-async def stats_member_callback(callback: CallbackQuery) -> None:
+async def stats_member_callback(callback: CallbackQuery, state: FSMContext) -> None:
     _, user_id_raw, day_index_raw = callback.data.split(":")
     user_id = int(user_id_raw)
     day_index = max(0, int(day_index_raw))
@@ -586,12 +747,26 @@ async def stats_member_callback(callback: CallbackQuery) -> None:
         return
     runtime = TaskRuntimeRepository(db)
     timezone_name = ctx.family_timezone or "UTC"
-    await _render_member_actions(callback, ctx.family_id, user_id, day_index, runtime, timezone_name)
+    members = await family_repo.list_members_for_edit(ctx.family_id)
+    member_display_name = next(
+        (str(m["display_name"]) for m in members if int(m["user_id"]) == user_id),
+        "",
+    )
+    await _render_member_actions(
+        callback,
+        ctx.family_id,
+        user_id,
+        day_index,
+        runtime,
+        timezone_name,
+        state,
+        member_display_name,
+    )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("statst:"))
-async def stats_task_callback(callback: CallbackQuery) -> None:
+async def stats_task_callback(callback: CallbackQuery, state: FSMContext) -> None:
     parts = callback.data.split(":")
     _, task_id_raw, day_index_raw, *source_parts = parts
     task_id = int(task_id_raw)
@@ -604,7 +779,20 @@ async def stats_task_callback(callback: CallbackQuery) -> None:
         return
     runtime = TaskRuntimeRepository(db)
     timezone_name = ctx.family_timezone or "UTC"
-    await _render_task_actions(callback, ctx.family_id, task_id, day_index, runtime, timezone_name, source_token)
+    repo = PlannedTaskRepository(db)
+    task_row = await repo.get_task(ctx.family_id, task_id)
+    task_title = str(task_row["title"]) if task_row is not None else ""
+    await _render_task_actions(
+        callback,
+        ctx.family_id,
+        task_id,
+        day_index,
+        runtime,
+        timezone_name,
+        state,
+        task_title,
+        source_token,
+    )
     await callback.answer()
 
 
@@ -676,6 +864,123 @@ async def stats_noop_callback(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+async def _history_edit_nav_apply(
+    callback: CallbackQuery,
+    state: FSMContext,
+    *,
+    mode: str,
+    day_index: int,
+    user_id: int | None = None,
+    member_display_name: str | None = None,
+    task_id: int | None = None,
+    task_title: str | None = None,
+    source_token: str = "root",
+) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    if not ctx.is_admin:
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+    await _save_stats_history_context(
+        state,
+        mode=mode,
+        day_index=max(0, day_index),
+        user_id=user_id,
+        member_display_name=member_display_name,
+        task_id=task_id,
+        task_title=task_title,
+        source_token=source_token,
+    )
+    runtime = TaskRuntimeRepository(db)
+    timezone_name = ctx.family_timezone or "UTC"
+    kb = await _prepare_history_edit_reply_markup(state, runtime, ctx.family_id, timezone_name)
+    try:
+        await callback.message.edit_text(HISTORY_EDIT_PROMPT, reply_markup=kb)
+    except TelegramBadRequest:
+        await callback.message.answer(HISTORY_EDIT_PROMPT, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("hedg:"))
+async def stats_history_edit_nav_global(callback: CallbackQuery, state: FSMContext) -> None:
+    day_index = max(0, int(callback.data.split(":")[1]))
+    await _history_edit_nav_apply(
+        callback,
+        state,
+        mode="global",
+        day_index=day_index,
+        user_id=None,
+        member_display_name=None,
+        task_id=None,
+        task_title=None,
+        source_token="root",
+    )
+
+
+@router.callback_query(F.data.startswith("hedm:"))
+async def stats_history_edit_nav_member(callback: CallbackQuery, state: FSMContext) -> None:
+    _, user_id_raw, day_index_raw = callback.data.split(":")
+    user_id = int(user_id_raw)
+    day_index = max(0, int(day_index_raw))
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    members = await family_repo.list_members_for_edit(ctx.family_id)
+    member_display_name = next(
+        (str(m["display_name"]) for m in members if int(m["user_id"]) == user_id),
+        "",
+    )
+    await _history_edit_nav_apply(
+        callback,
+        state,
+        mode="member",
+        day_index=day_index,
+        user_id=user_id,
+        member_display_name=member_display_name,
+        task_id=None,
+        task_title=None,
+        source_token="root",
+    )
+
+
+@router.callback_query(F.data.startswith("hedt:"))
+async def stats_history_edit_nav_task(callback: CallbackQuery, state: FSMContext) -> None:
+    m = re.match(r"^hedt:(\d+):(.+):(\d+)$", callback.data or "")
+    if m is None:
+        await callback.answer()
+        return
+    task_id = int(m.group(1))
+    source_token = m.group(2)
+    day_index = max(0, int(m.group(3)))
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    repo = PlannedTaskRepository(db)
+    task_row = await repo.get_task(ctx.family_id, task_id)
+    task_title = str(task_row["title"]) if task_row is not None else ""
+    await _history_edit_nav_apply(
+        callback,
+        state,
+        mode="task",
+        day_index=day_index,
+        user_id=None,
+        member_display_name=None,
+        task_id=task_id,
+        task_title=task_title,
+        source_token=source_token,
+    )
+
+
 @router.callback_query(F.data == "statsback:global")
 async def stats_back_global(callback: CallbackQuery) -> None:
     db, user_repo, family_repo = get_repositories()
@@ -745,16 +1050,6 @@ async def stats_back_task(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-def _history_edit_list_keyboard(rows: list, timezone_name: str) -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text=_history_button_label(row, timezone_name), callback_data=f"histedit:{row['completion_id']}")]
-        for row in reversed(rows)
-    ]
-    return InlineKeyboardMarkup(
-        inline_keyboard=buttons or [[InlineKeyboardButton(text="История пуста", callback_data="noop")]]
-    )
-
-
 def _history_card_text(entry: dict, timezone_name: str) -> str:
     local_completed_at = _to_family_local_timestamp(str(entry["completed_at"]), timezone_name)
     local_added_at = _to_family_local_timestamp(str(entry["added_at"]), timezone_name)
@@ -782,7 +1077,7 @@ def _history_entry_actions_keyboard(completion_id: int) -> InlineKeyboardMarkup:
 
 
 @router.message(NavStates.in_stats_menu, F.text == "Правка")
-async def stats_history_edit_menu(message: Message) -> None:
+async def stats_history_edit_menu(message: Message, state: FSMContext) -> None:
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if ctx.family_id is None:
@@ -793,16 +1088,13 @@ async def stats_history_edit_menu(message: Message) -> None:
         return
     runtime = TaskRuntimeRepository(db)
     timezone_name = ctx.family_timezone or "UTC"
-    rows = await runtime.list_recent_actions(ctx.family_id, HISTORY_LIMIT, 0)
-    await message.answer(
-        "Выберите запись истории для правки:",
-        reply_markup=_history_edit_list_keyboard(rows, timezone_name),
-    )
+    kb = await _prepare_history_edit_reply_markup(state, runtime, ctx.family_id, timezone_name)
+    await message.answer(HISTORY_EDIT_PROMPT, reply_markup=kb)
 
 
 @router.callback_query(F.data == "histeditback")
 async def stats_history_edit_back(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
+    await _clear_state_keep_stats_context(state)
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if ctx.family_id is None:
@@ -813,17 +1105,14 @@ async def stats_history_edit_back(callback: CallbackQuery, state: FSMContext) ->
         return
     runtime = TaskRuntimeRepository(db)
     timezone_name = ctx.family_timezone or "UTC"
-    rows = await runtime.list_recent_actions(ctx.family_id, HISTORY_LIMIT, 0)
-    await callback.message.answer(
-        "Выберите запись истории для правки:",
-        reply_markup=_history_edit_list_keyboard(rows, timezone_name),
-    )
+    kb = await _prepare_history_edit_reply_markup(state, runtime, ctx.family_id, timezone_name)
+    await callback.message.answer(HISTORY_EDIT_PROMPT, reply_markup=kb)
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("histedit:"))
 async def stats_history_edit_entry(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
+    await _clear_state_keep_stats_context(state)
     completion_id = int(callback.data.split(":")[1])
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
@@ -898,7 +1187,7 @@ async def stats_history_edit_executor_save(callback: CallbackQuery, state: FSMCo
         await callback.answer("Не удалось изменить исполнителя.", show_alert=True)
         return
     entry = await runtime.get_completion_entry(ctx.family_id, completion_id)
-    await state.clear()
+    await _clear_state_keep_stats_context(state)
     if entry is not None:
         timezone_name = ctx.family_timezone or "UTC"
         kb = _history_entry_actions_keyboard(completion_id)
@@ -936,11 +1225,11 @@ async def stats_history_edit_time_save(message: Message, state: FSMContext) -> N
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if ctx.family_id is None:
-        await state.clear()
+        await _clear_state_keep_stats_context(state)
         await message.answer("Вы пока не добавлены в семью.")
         return
     if not ctx.is_admin:
-        await state.clear()
+        await _clear_state_keep_stats_context(state)
         await message.answer("Эта команда доступна только администраторам.")
         return
     raw_value = (message.text or "").strip()
@@ -952,17 +1241,17 @@ async def stats_history_edit_time_save(message: Message, state: FSMContext) -> N
     data = await state.get_data()
     completion_id = int(data.get("history_completion_id", 0))
     if completion_id <= 0:
-        await state.clear()
+        await _clear_state_keep_stats_context(state)
         await message.answer("Не удалось определить запись истории.")
         return
     runtime = TaskRuntimeRepository(db)
     updated = await runtime.update_completion_datetime(ctx.family_id, completion_id, new_completed_at)
     if not updated:
-        await state.clear()
+        await _clear_state_keep_stats_context(state)
         await message.answer("Не удалось обновить время действия.")
         return
     entry = await runtime.get_completion_entry(ctx.family_id, completion_id)
-    await state.clear()
+    await _clear_state_keep_stats_context(state)
     await message.answer("Время действия обновлено.")
     if entry is not None:
         kb = _history_entry_actions_keyboard(completion_id)
@@ -1013,7 +1302,7 @@ async def stats_history_delete_no(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("histeditdelyes:"))
-async def stats_history_delete_yes(callback: CallbackQuery) -> None:
+async def stats_history_delete_yes(callback: CallbackQuery, state: FSMContext) -> None:
     completion_id = int(callback.data.split(":")[1])
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
@@ -1029,12 +1318,9 @@ async def stats_history_delete_yes(callback: CallbackQuery) -> None:
         await callback.answer("Не удалось удалить запись.", show_alert=True)
         return
     timezone_name = ctx.family_timezone or "UTC"
-    rows = await runtime.list_recent_actions(ctx.family_id, HISTORY_LIMIT, 0)
+    kb = await _prepare_history_edit_reply_markup(state, runtime, ctx.family_id, timezone_name)
     await callback.message.answer("Запись истории удалена.")
-    await callback.message.answer(
-        "Выберите запись истории для правки:",
-        reply_markup=_history_edit_list_keyboard(rows, timezone_name),
-    )
+    await callback.message.answer(HISTORY_EDIT_PROMPT, reply_markup=kb)
     await callback.answer()
 
 
