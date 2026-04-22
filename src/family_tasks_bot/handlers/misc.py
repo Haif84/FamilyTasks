@@ -320,7 +320,11 @@ async def _render_member_actions(
     if entries:
         for row in entries:
             local_completed_at = _to_family_local_timestamp(str(row["completed_at"]), timezone_name)
-            lines.append(f"- {local_completed_at} - {row['member_display_name']} - {int(row['effort_stars'])}★")
+            line = f"- {local_completed_at} - {row['task_title']} - {int(row['effort_stars'])}★"
+            comment_text = str(row["comment_text"] or "").strip()
+            if comment_text:
+                line += f" - {comment_text}"
+            lines.append(line)
     else:
         lines.append("Действий пока нет.")
     nav: list[InlineKeyboardButton] = []

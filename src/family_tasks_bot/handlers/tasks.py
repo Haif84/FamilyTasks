@@ -77,6 +77,90 @@ async def _clear_callback_inline_keyboard(callback: CallbackQuery) -> None:
             pass
 
 
+def _task_description(task: dict | object) -> str:
+    raw = task["description"] if hasattr(task, "keys") and "description" in task.keys() else None
+    if raw is None:
+        return ""
+    return str(raw).strip()
+
+
+def _manual_completion_confirm_text(*, executor_name: str, task: dict | object) -> str:
+    description = _task_description(task)
+    suffix = f" ({description})" if description else ""
+    return f"Вы действительно, хотите добавить выполненую {executor_name} задачу {task['title']}{suffix}?"
+
+
+def _manual_confirm_keyboard(scope: str, scope_id: int, task_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Отмена",
+                    callback_data=f"manualconfirm:cancel:{scope}:{scope_id}:{task_id}",
+                ),
+                InlineKeyboardButton(
+                    text="Назад",
+                    callback_data=f"manualconfirm:back:{scope}:{scope_id}:{task_id}",
+                ),
+            ],
+            [InlineKeyboardButton(text="Добавить", callback_data=f"manualconfirm:add:{scope}:{scope_id}:{task_id}")],
+            [
+                InlineKeyboardButton(
+                    text="Добавить (еще одну)",
+                    callback_data=f"manualconfirm:addmore:{scope}:{scope_id}:{task_id}",
+                )
+            ],
+        ]
+    )
+
+
+def _manual_for_member_confirm_keyboard(
+    target_user_id: int,
+    scope: str,
+    scope_id: int,
+    task_id: int,
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Отмена",
+                    callback_data=f"manualforconfirm:cancel:{target_user_id}:{scope}:{scope_id}:{task_id}",
+                ),
+                InlineKeyboardButton(
+                    text="Назад",
+                    callback_data=f"manualforconfirm:back:{target_user_id}:{scope}:{scope_id}:{task_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Добавить",
+                    callback_data=f"manualforconfirm:add:{target_user_id}:{scope}:{scope_id}:{task_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Добавить (еще одну)",
+                    callback_data=f"manualforconfirm:addmore:{target_user_id}:{scope}:{scope_id}:{task_id}",
+                )
+            ],
+        ]
+    )
+
+
+def _add_execution_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Отмена", callback_data="addexecconfirm:cancel"),
+                InlineKeyboardButton(text="Назад", callback_data="addexecconfirm:back"),
+            ],
+            [InlineKeyboardButton(text="Добавить", callback_data="addexecconfirm:add")],
+            [InlineKeyboardButton(text="Добавить (еще одну)", callback_data="addexecconfirm:addmore")],
+        ]
+    )
+
+
 def _stars_text(stars: int) -> str:
     normalized = max(1, min(5, int(stars)))
     return ("★" * normalized) + ("☆" * (5 - normalized))
@@ -95,7 +179,7 @@ async def _manual_done_root_keyboard(
             [
                 InlineKeyboardButton(
                     text=str(task["title"]),
-                    callback_data=f"manualdone:{task['id']}",
+                    callback_data=f"manualdone:root:{task['id']}",
                 )
             ]
         )
@@ -117,14 +201,14 @@ async def _manual_done_root_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _manual_done_group_keyboard(tasks: list[dict | object]) -> InlineKeyboardMarkup:
+def _manual_done_group_keyboard(tasks: list[dict | object], group_id: int) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for task in tasks:
         rows.append(
             [
                 InlineKeyboardButton(
                     text=str(task["title"]),
-                    callback_data=f"manualdone:{task['id']}",
+                    callback_data=f"manualdone:group:{group_id}:{task['id']}",
                 )
             ]
         )
@@ -161,7 +245,7 @@ async def _manual_done_for_member_root_keyboard(
             [
                 InlineKeyboardButton(
                     text=str(task["title"]),
-                    callback_data=f"manualfordone:{target_user_id}:{task['id']}",
+                    callback_data=f"manualfordone:{target_user_id}:root:{task['id']}",
                 )
             ]
         )
@@ -197,14 +281,16 @@ async def _manual_done_for_member_root_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _manual_done_for_member_group_keyboard(tasks: list[dict | object], target_user_id: int) -> InlineKeyboardMarkup:
+def _manual_done_for_member_group_keyboard(
+    tasks: list[dict | object], target_user_id: int, group_id: int
+) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for task in tasks:
         rows.append(
             [
                 InlineKeyboardButton(
                     text=str(task["title"]),
-                    callback_data=f"manualfordone:{target_user_id}:{task['id']}",
+                    callback_data=f"manualfordone:{target_user_id}:group:{group_id}:{task['id']}",
                 )
             ]
         )
@@ -232,7 +318,7 @@ async def _add_execution_root_keyboard(
             [
                 InlineKeyboardButton(
                     text=str(task["title"]),
-                    callback_data=f"addexec:{task['id']}",
+                    callback_data=f"addexec:root:{task['id']}",
                 )
             ]
         )
@@ -254,14 +340,14 @@ async def _add_execution_root_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _add_execution_group_keyboard(tasks: list[dict | object]) -> InlineKeyboardMarkup:
+def _add_execution_group_keyboard(tasks: list[dict | object], group_id: int) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for task in tasks:
         rows.append(
             [
                 InlineKeyboardButton(
                     text=str(task["title"]),
-                    callback_data=f"addexec:{task['id']}",
+                    callback_data=f"addexec:group:{group_id}:{task['id']}",
                 )
             ]
         )
@@ -481,6 +567,159 @@ async def add_to_execution(message: Message, state: FSMContext) -> None:
     await state.clear()
 
 
+async def _manual_self_level_payload(
+    runtime: TaskRuntimeRepository,
+    family_repo,
+    *,
+    family_id: int,
+    scope: str,
+    scope_id: int,
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    if scope == "group":
+        group = await family_repo.get_group(family_id, scope_id)
+        if group is None:
+            return None
+        tasks = await runtime.list_planned_tasks_by_group(family_id, scope_id)
+        text = f'Группа "{group["name"]}": выберите выполненную задачу.'
+        if not tasks:
+            text = f'Группа "{group["name"]}": активных задач нет.'
+        kb = _manual_done_group_keyboard(tasks, scope_id)
+    else:
+        kb = await _manual_done_root_keyboard(runtime, family_repo, family_id)
+        text = "Плановые задачи:"
+    return text, kb
+
+
+async def _show_manual_self_level(
+    callback: CallbackQuery,
+    runtime: TaskRuntimeRepository,
+    family_repo,
+    *,
+    family_id: int,
+    scope: str,
+    scope_id: int,
+) -> None:
+    payload = await _manual_self_level_payload(
+        runtime,
+        family_repo,
+        family_id=family_id,
+        scope=scope,
+        scope_id=scope_id,
+    )
+    if payload is None:
+        await callback.answer("Группа не найдена.", show_alert=True)
+        return
+    text, kb = payload
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=kb)
+
+
+async def _manual_member_level_payload(
+    runtime: TaskRuntimeRepository,
+    family_repo,
+    *,
+    family_id: int,
+    target_user_id: int,
+    member_name: str,
+    scope: str,
+    scope_id: int,
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    if scope == "group":
+        group = await family_repo.get_group(family_id, scope_id)
+        if group is None:
+            return None
+        tasks = await runtime.list_planned_tasks_by_group(family_id, scope_id)
+        kb = _manual_done_for_member_group_keyboard(tasks, target_user_id, scope_id)
+        text = f'Исполнитель: {member_name}\nГруппа "{group["name"]}": выберите выполненную задачу.'
+        if not tasks:
+            text = f'Исполнитель: {member_name}\nГруппа "{group["name"]}": активных задач нет.'
+    else:
+        kb = await _manual_done_for_member_root_keyboard(runtime, family_repo, family_id, target_user_id)
+        text = f"Исполнитель: {member_name}\nВыберите выполненную задачу."
+    return text, kb
+
+
+async def _show_manual_member_level(
+    callback: CallbackQuery,
+    runtime: TaskRuntimeRepository,
+    family_repo,
+    *,
+    family_id: int,
+    target_user_id: int,
+    member_name: str,
+    scope: str,
+    scope_id: int,
+) -> None:
+    payload = await _manual_member_level_payload(
+        runtime,
+        family_repo,
+        family_id=family_id,
+        target_user_id=target_user_id,
+        member_name=member_name,
+        scope=scope,
+        scope_id=scope_id,
+    )
+    if payload is None:
+        await callback.answer("Группа не найдена.", show_alert=True)
+        return
+    text, kb = payload
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=kb)
+
+
+async def _add_execution_level_payload(
+    runtime: TaskRuntimeRepository,
+    family_repo,
+    *,
+    family_id: int,
+    scope: str,
+    scope_id: int,
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    if scope == "group":
+        group = await family_repo.get_group(family_id, scope_id)
+        if group is None:
+            return None
+        tasks = await runtime.list_planned_tasks_by_group(family_id, scope_id)
+        kb = _add_execution_group_keyboard(tasks, scope_id)
+        text = f'Группа "{group["name"]}": выберите задачу к выполнению.'
+        if not tasks:
+            text = f'Группа "{group["name"]}": активных задач нет.'
+    else:
+        kb = await _add_execution_root_keyboard(runtime, family_repo, family_id)
+        text = "Плановые задачи:"
+    return text, kb
+
+
+async def _show_add_execution_level(
+    callback: CallbackQuery,
+    runtime: TaskRuntimeRepository,
+    family_repo,
+    *,
+    family_id: int,
+    scope: str,
+    scope_id: int,
+) -> None:
+    payload = await _add_execution_level_payload(
+        runtime,
+        family_repo,
+        family_id=family_id,
+        scope=scope,
+        scope_id=scope_id,
+    )
+    if payload is None:
+        await callback.answer("Группа не найдена.", show_alert=True)
+        return
+    text, kb = payload
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=kb)
+
+
 @router.callback_query(F.data.startswith("manualgroup:"))
 async def add_completed_group_callback(callback: CallbackQuery) -> None:
     token = callback.data.split(":", 1)[1]
@@ -512,7 +751,7 @@ async def add_completed_group_callback(callback: CallbackQuery) -> None:
         await callback.answer("Группа не найдена.", show_alert=True)
         return
     tasks = await runtime.list_planned_tasks_by_group(ctx.family_id, group_id)
-    kb = _manual_done_group_keyboard(tasks)
+    kb = _manual_done_group_keyboard(tasks, group_id)
     text = f'Группа "{group["name"]}": выберите выполненную задачу.'
     if not tasks:
         text = f'Группа "{group["name"]}": активных задач нет.'
@@ -602,7 +841,7 @@ async def add_completed_for_member_group(callback: CallbackQuery) -> None:
     if not tasks:
         await callback.answer("В группе нет активных задач.", show_alert=True)
         return
-    kb = _manual_done_for_member_group_keyboard(tasks, target_user_id)
+    kb = _manual_done_for_member_group_keyboard(tasks, target_user_id, group_id)
     text = f'Исполнитель: {member_name}\nГруппа "{group["name"]}": выберите выполненную задачу.'
     try:
         await callback.message.edit_text(text, reply_markup=kb)
@@ -648,7 +887,7 @@ async def add_execution_group_callback(callback: CallbackQuery) -> None:
     if not tasks:
         await callback.answer("В группе нет активных задач.", show_alert=True)
         return
-    kb = _add_execution_group_keyboard(tasks)
+    kb = _add_execution_group_keyboard(tasks, group_id)
     text = f'Группа "{group["name"]}": выберите задачу к выполнению.'
     try:
         await callback.message.edit_text(text, reply_markup=kb)
@@ -1415,10 +1654,24 @@ async def add_default_task(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("addexec:"))
 async def add_execution_callback(callback: CallbackQuery, state: FSMContext) -> None:
-    task_id = int(callback.data.split(":")[1])
+    parts = callback.data.split(":")
+    scope = "root"
+    scope_id = 0
+    if len(parts) == 2:
+        task_id = int(parts[1])
+    elif len(parts) >= 4:
+        scope = parts[1]
+        if scope == "group":
+            scope_id = int(parts[2])
+            task_id = int(parts[3])
+        else:
+            task_id = int(parts[-1])
+    else:
+        await callback.answer("Некорректные данные.", show_alert=True)
+        return
     await _clear_callback_inline_keyboard(callback)
     await state.set_state(RuntimeTaskStates.waiting_execution_time)
-    await state.update_data(exec_task_id=task_id)
+    await state.update_data(exec_task_id=task_id, exec_scope=scope, exec_scope_id=scope_id)
     await callback.message.answer("Введите время чч:мм или 'сейчас'.")
     await callback.answer()
 
@@ -1430,10 +1683,16 @@ async def execution_time_entered(message: Message, state: FSMContext) -> None:
     task_id = int(data["exec_task_id"])
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
-    runtime = TaskRuntimeRepository(db)
-    notify_repo = NotificationRepository(db)
+    repo = PlannedTaskRepository(db)
+    task = await repo.get_task(ctx.family_id, task_id)
+    if task is None:
+        await state.clear()
+        await message.answer("Задача не найдена.")
+        return
+    activation_text = "сейчас"
+    activated_at_iso: str | None = None
     if text == "сейчас":
-        created = await runtime.create_instance(ctx.family_id, task_id, ctx.user_id, "manual")
+        pass
     else:
         if not is_valid_hhmm(text):
             await message.answer("Введите 'сейчас' или корректное время чч:мм.")
@@ -1446,14 +1705,96 @@ async def execution_time_entered(message: Message, state: FSMContext) -> None:
             tz = timezone.utc
         local_now = datetime.now(timezone.utc).astimezone(tz)
         local_dt = local_now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-        utc_dt = local_dt.astimezone(timezone.utc)
-        created = await runtime.create_instance(ctx.family_id, task_id, ctx.user_id, "manual", utc_dt)
-    await state.clear()
-    if created is None:
-        await message.answer("Такая задача уже есть в активных/запланированных.")
+        utc_dt = local_dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
+        activated_at_iso = utc_dt.isoformat()
+        activation_text = text
+    await state.set_state(RuntimeTaskStates.waiting_execution_confirm)
+    await state.update_data(exec_task_id=task_id, exec_activation_iso=activated_at_iso)
+    confirm_text = (
+        f"Вы действительно, хотите добавить выполненую вашу задачу {task['title']}"
+        f" ({activation_text})?"
+    )
+    await message.answer(confirm_text, reply_markup=_add_execution_confirm_keyboard())
+
+
+@router.callback_query(F.data.startswith("addexecconfirm:"))
+async def add_execution_confirm_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    action = callback.data.split(":", 1)[1]
+    data = await state.get_data()
+    task_id = int(data.get("exec_task_id", 0))
+    scope = str(data.get("exec_scope", "root"))
+    scope_id = int(data.get("exec_scope_id", 0))
+    if task_id <= 0:
+        await state.clear()
+        await callback.answer("Сессия подтверждения устарела.", show_alert=True)
         return
-    await notify_family(message.bot, notify_repo, ctx.family_id, "Новая задача добавлена к выполнению.")
-    await message.answer("Задача добавлена.")
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await state.clear()
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    if not can_add_to_execution(ctx):
+        await state.clear()
+        await callback.answer("Нет прав", show_alert=True)
+        return
+    runtime = TaskRuntimeRepository(db)
+    notify_repo = NotificationRepository(db)
+    repo = PlannedTaskRepository(db)
+    task = await repo.get_task(ctx.family_id, task_id)
+    if task is None:
+        await state.clear()
+        await callback.answer("Задача не найдена.", show_alert=True)
+        return
+    if action == "cancel":
+        await state.clear()
+        try:
+            await callback.message.edit_text("Операция отменена.")
+        except TelegramBadRequest:
+            await callback.message.answer("Операция отменена.")
+        await callback.answer()
+        return
+    if action == "back":
+        await state.set_state(RuntimeTaskStates.waiting_execution_time)
+        await _show_add_execution_level(
+            callback,
+            runtime,
+            family_repo,
+            family_id=ctx.family_id,
+            scope=scope,
+            scope_id=scope_id,
+        )
+        await callback.answer()
+        return
+    activated_at_iso = data.get("exec_activation_iso")
+    activated_at: datetime | None = None
+    if isinstance(activated_at_iso, str) and activated_at_iso:
+        activated_at = datetime.fromisoformat(activated_at_iso)
+    created = await runtime.create_instance(ctx.family_id, task_id, ctx.user_id, "manual", activated_at)
+    if created is None:
+        await state.clear()
+        await callback.message.edit_text("Такая задача уже есть в активных/запланированных.")
+        await callback.answer()
+        return
+    await notify_family(callback.message.bot, notify_repo, ctx.family_id, "Новая задача добавлена к выполнению.")
+    success_text = f"Задача {task['title']} добавлена"
+    if action == "addmore":
+        await state.set_state(RuntimeTaskStates.waiting_execution_time)
+        await callback.message.edit_text(success_text)
+        payload = await _add_execution_level_payload(
+            runtime,
+            family_repo,
+            family_id=ctx.family_id,
+            scope=scope,
+            scope_id=scope_id,
+        )
+        if payload is not None:
+            level_text, level_kb = payload
+            await callback.message.answer(level_text, reply_markup=level_kb)
+    else:
+        await state.clear()
+        await callback.message.edit_text(success_text)
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("done:"))
@@ -1481,9 +1822,52 @@ async def complete_current_task(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("manualdone:"))
 async def complete_manual_task(callback: CallbackQuery, state: FSMContext) -> None:
-    planned_task_id = int(callback.data.split(":")[1])
+    parts = callback.data.split(":")
+    scope = "root"
+    scope_id = 0
+    if len(parts) == 2:
+        planned_task_id = int(parts[1])
+    elif len(parts) >= 4:
+        scope = parts[1]
+        if scope == "group":
+            scope_id = int(parts[2])
+            planned_task_id = int(parts[3])
+        else:
+            planned_task_id = int(parts[-1])
+    else:
+        await callback.answer("Некорректные данные.", show_alert=True)
+        return
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    repo = PlannedTaskRepository(db)
+    task = await repo.get_task(ctx.family_id, planned_task_id)
+    if task is None:
+        await callback.answer("Задача не найдена.", show_alert=True)
+        return
+    await state.update_data(
+        manual_confirm_scope=scope,
+        manual_confirm_scope_id=scope_id,
+        manual_confirm_task_id=planned_task_id,
+    )
+    text = _manual_completion_confirm_text(executor_name="вашу", task=task)
+    kb = _manual_confirm_keyboard(scope, scope_id, planned_task_id)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("manualconfirm:"))
+async def complete_manual_task_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    _, action, scope, scope_id_raw, task_id_raw = callback.data.split(":")
+    scope_id = int(scope_id_raw)
+    planned_task_id = int(task_id_raw)
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
     repo = PlannedTaskRepository(db)
     runtime = TaskRuntimeRepository(db)
     notify_repo = NotificationRepository(db)
@@ -1491,7 +1875,26 @@ async def complete_manual_task(callback: CallbackQuery, state: FSMContext) -> No
     if task is None:
         await callback.answer("Задача не найдена.", show_alert=True)
         return
-    await _clear_callback_inline_keyboard(callback)
+    if action == "cancel":
+        await state.clear()
+        try:
+            await callback.message.edit_text("Операция отменена.")
+        except TelegramBadRequest:
+            await callback.message.answer("Операция отменена.")
+        await callback.answer()
+        return
+    if action == "back":
+        await _show_manual_self_level(
+            callback,
+            runtime,
+            family_repo,
+            family_id=ctx.family_id,
+            scope=scope,
+            scope_id=scope_id,
+        )
+        await callback.answer()
+        return
+    add_more = action == "addmore"
     requested = await _maybe_request_manual_comment(
         callback,
         state,
@@ -1500,6 +1903,14 @@ async def complete_manual_task(callback: CallbackQuery, state: FSMContext) -> No
         actor_user_id=ctx.user_id,
     )
     if requested:
+        await state.update_data(
+            manual_comment_task_title=str(task["title"]),
+            manual_comment_add_more=add_more,
+            manual_comment_scope=scope,
+            manual_comment_scope_id=scope_id,
+            manual_comment_target_user_id=0,
+            manual_comment_target_member_name="",
+        )
         await callback.answer()
         return
     await _finalize_manual_completion(
@@ -1512,14 +1923,81 @@ async def complete_manual_task(callback: CallbackQuery, state: FSMContext) -> No
         actor_user_id=ctx.user_id,
         actor_chat_id=callback.from_user.id,
     )
-    await callback.answer("Выполнение добавлено")
+    success_text = f"Задача {task['title']} добавлена"
+    if add_more:
+        await callback.message.edit_text(success_text)
+        payload = await _manual_self_level_payload(
+            runtime,
+            family_repo,
+            family_id=ctx.family_id,
+            scope=scope,
+            scope_id=scope_id,
+        )
+        if payload is not None:
+            level_text, level_kb = payload
+            await callback.message.answer(level_text, reply_markup=level_kb)
+    else:
+        await callback.message.edit_text(success_text)
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("manualfordone:"))
 async def complete_manual_task_for_member(callback: CallbackQuery, state: FSMContext) -> None:
-    _, target_user_raw, task_raw = callback.data.split(":")
+    parts = callback.data.split(":")
+    target_user_id = int(parts[1])
+    scope = "root"
+    scope_id = 0
+    if len(parts) == 3:
+        planned_task_id = int(parts[2])
+    elif len(parts) >= 5:
+        scope = parts[2]
+        if scope == "group":
+            scope_id = int(parts[3])
+            planned_task_id = int(parts[4])
+        else:
+            planned_task_id = int(parts[-1])
+    else:
+        await callback.answer("Некорректные данные.", show_alert=True)
+        return
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    if not can_add_to_execution(ctx):
+        await callback.answer("Нет прав", show_alert=True)
+        return
+    members = await family_repo.list_members_for_edit(ctx.family_id)
+    member_name = _member_display_name(members, target_user_id)
+    if member_name is None:
+        await callback.answer("Участник не найден.", show_alert=True)
+        return
+    repo = PlannedTaskRepository(db)
+    task = await repo.get_task(ctx.family_id, planned_task_id)
+    if task is None:
+        await callback.answer("Задача не найдена.", show_alert=True)
+        return
+    await state.update_data(
+        manual_for_confirm_scope=scope,
+        manual_for_confirm_scope_id=scope_id,
+        manual_for_confirm_task_id=planned_task_id,
+        manual_for_confirm_target_user_id=target_user_id,
+    )
+    text = _manual_completion_confirm_text(executor_name=member_name, task=task)
+    kb = _manual_for_member_confirm_keyboard(target_user_id, scope, scope_id, planned_task_id)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("manualforconfirm:"))
+async def complete_manual_task_for_member_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    _, action, target_user_raw, scope, scope_id_raw, task_id_raw = callback.data.split(":")
     target_user_id = int(target_user_raw)
-    planned_task_id = int(task_raw)
+    scope_id = int(scope_id_raw)
+    planned_task_id = int(task_id_raw)
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if ctx.family_id is None:
@@ -1540,7 +2018,28 @@ async def complete_manual_task_for_member(callback: CallbackQuery, state: FSMCon
     if task is None:
         await callback.answer("Задача не найдена.", show_alert=True)
         return
-    await _clear_callback_inline_keyboard(callback)
+    if action == "cancel":
+        await state.clear()
+        try:
+            await callback.message.edit_text("Операция отменена.")
+        except TelegramBadRequest:
+            await callback.message.answer("Операция отменена.")
+        await callback.answer()
+        return
+    if action == "back":
+        await _show_manual_member_level(
+            callback,
+            runtime,
+            family_repo,
+            family_id=ctx.family_id,
+            target_user_id=target_user_id,
+            member_name=member_name,
+            scope=scope,
+            scope_id=scope_id,
+        )
+        await callback.answer()
+        return
+    add_more = action == "addmore"
     requested = await _maybe_request_manual_comment(
         callback,
         state,
@@ -1549,6 +2048,14 @@ async def complete_manual_task_for_member(callback: CallbackQuery, state: FSMCon
         actor_user_id=ctx.user_id,
     )
     if requested:
+        await state.update_data(
+            manual_comment_task_title=str(task["title"]),
+            manual_comment_add_more=add_more,
+            manual_comment_scope=scope,
+            manual_comment_scope_id=scope_id,
+            manual_comment_target_user_id=target_user_id,
+            manual_comment_target_member_name=member_name,
+        )
         await callback.message.answer(f"Исполнитель: {member_name}")
         await callback.answer()
         return
@@ -1562,7 +2069,24 @@ async def complete_manual_task_for_member(callback: CallbackQuery, state: FSMCon
         actor_user_id=ctx.user_id,
         actor_chat_id=callback.from_user.id,
     )
-    await callback.answer("Выполнение добавлено")
+    success_text = f"Задача {task['title']} добавлена"
+    if add_more:
+        await callback.message.edit_text(success_text)
+        payload = await _manual_member_level_payload(
+            runtime,
+            family_repo,
+            family_id=ctx.family_id,
+            target_user_id=target_user_id,
+            member_name=member_name,
+            scope=scope,
+            scope_id=scope_id,
+        )
+        if payload is not None:
+            level_text, level_kb = payload
+            await callback.message.answer(level_text, reply_markup=level_kb)
+    else:
+        await callback.message.edit_text(success_text)
+    await callback.answer()
 
 
 @router.message(RuntimeTaskStates.waiting_manual_comment)
@@ -1579,6 +2103,12 @@ async def manual_comment_entered(message: Message, state: FSMContext) -> None:
     planned_task_id = int(data.get("manual_comment_task_id", 0))
     completed_by_user_id = int(data.get("manual_comment_completed_by_user_id", 0))
     actor_user_id = int(data.get("manual_comment_actor_user_id", 0))
+    task_title = str(data.get("manual_comment_task_title", "")).strip()
+    add_more = bool(data.get("manual_comment_add_more", False))
+    scope = str(data.get("manual_comment_scope", "root"))
+    scope_id = int(data.get("manual_comment_scope_id", 0))
+    target_user_id = int(data.get("manual_comment_target_user_id", 0))
+    target_member_name = str(data.get("manual_comment_target_member_name", "")).strip()
     if planned_task_id <= 0 or completed_by_user_id <= 0 or actor_user_id <= 0:
         await state.clear()
         await message.answer("Не удалось определить задачу для комментария.")
@@ -1601,8 +2131,41 @@ async def manual_comment_entered(message: Message, state: FSMContext) -> None:
         actor_chat_id=message.from_user.id,
         comment_text=text,
     )
+    success_title = task_title or "задача"
+    if add_more:
+        family_id = ctx.family_id
+        await message.answer(f"Задача {success_title} добавлена")
+        if target_user_id > 0:
+            display_name = target_member_name
+            if not display_name:
+                members = await family_repo.list_members_for_edit(family_id)
+                display_name = _member_display_name(members, target_user_id) or "Участник"
+            payload = await _manual_member_level_payload(
+                runtime,
+                family_repo,
+                family_id=family_id,
+                target_user_id=target_user_id,
+                member_name=display_name,
+                scope=scope,
+                scope_id=scope_id,
+            )
+            if payload is not None:
+                level_text, level_kb = payload
+                await message.answer(level_text, reply_markup=level_kb)
+        else:
+            payload = await _manual_self_level_payload(
+                runtime,
+                family_repo,
+                family_id=family_id,
+                scope=scope,
+                scope_id=scope_id,
+            )
+            if payload is not None:
+                level_text, level_kb = payload
+                await message.answer(level_text, reply_markup=level_kb)
+    else:
+        await message.answer(f"Задача {success_title} добавлена")
     await state.clear()
-    await message.answer("Выполнение добавлено с комментарием.")
 
 
 @router.message(F.text == "Отм. последнее выполнение")

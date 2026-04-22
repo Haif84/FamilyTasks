@@ -590,6 +590,7 @@ class PlannedTaskRepository:
             SELECT
                 pt.id,
                 pt.title,
+                pt.description,
                 pt.sort_order,
                 pt.is_active,
                 pt.group_id,
@@ -1312,7 +1313,9 @@ class TaskRuntimeRepository:
             SELECT
                 tc.completed_at,
                 u.display_name AS member_display_name,
-                COALESCE(pt.effort_stars, 1) AS effort_stars
+                COALESCE(pt.effort_stars, 1) AS effort_stars,
+                pt.title AS task_title,
+                tc.comment_text
             FROM task_completions tc
             JOIN users u ON u.id = tc.completed_by
             JOIN planned_tasks pt ON pt.id = tc.planned_task_id
