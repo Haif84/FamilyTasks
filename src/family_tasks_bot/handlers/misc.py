@@ -54,8 +54,8 @@ def _format_action_label(task_title: str, completion_mode: str) -> str:
 
 def _history_line(entry: dict, timezone_name: str) -> str:
     local_completed_at = _to_family_local_timestamp(str(entry["completed_at"]), timezone_name)
-    action = _format_action_label(str(entry["task_title"]), str(entry["completion_mode"]))
-    return f"- {local_completed_at} | {action} | {entry['member_display_name']}"
+    effort_stars = int(entry["effort_stars"]) if hasattr(entry, "keys") and "effort_stars" in entry.keys() else 1
+    return f"- {local_completed_at} | {entry['task_title']} | {entry['member_display_name']} | {effort_stars}★"
 
 
 def _history_button_label(entry: dict, timezone_name: str) -> str:
@@ -300,7 +300,7 @@ async def _send_recent_actions(
     if not rows:
         lines.append("История пока пуста.")
     else:
-        for row in rows:
+        for row in reversed(rows):
             lines.append(_history_line(row, timezone_name))
     await message.answer("\n".join(lines))
 
@@ -318,7 +318,7 @@ async def _render_member_actions(
     entries = rows[:PAGE_SIZE]
     lines = ["Последние действия участника:"]
     if entries:
-        for row in entries:
+        for row in reversed(entries):
             local_completed_at = _to_family_local_timestamp(str(row["completed_at"]), timezone_name)
             line = f"- {local_completed_at} - {row['task_title']} - {int(row['effort_stars'])}★"
             comment_text = str(row["comment_text"] or "").strip()
@@ -350,7 +350,7 @@ async def _render_task_actions(
     entries = rows[:PAGE_SIZE]
     lines = ["Последние действия по задаче:"]
     if entries:
-        for row in entries:
+        for row in reversed(entries):
             local_completed_at = _to_family_local_timestamp(str(row["completed_at"]), timezone_name)
             lines.append(f"- {local_completed_at} — {row['display_name']}")
     else:
@@ -486,7 +486,7 @@ async def stats_task_cancel_callback(callback: CallbackQuery) -> None:
 def _history_edit_list_keyboard(rows: list, timezone_name: str) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text=_history_button_label(row, timezone_name), callback_data=f"histedit:{row['completion_id']}")]
-        for row in rows
+        for row in reversed(rows)
     ]
     return InlineKeyboardMarkup(
         inline_keyboard=buttons or [[InlineKeyboardButton(text="История пуста", callback_data="noop")]]

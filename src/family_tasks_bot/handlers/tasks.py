@@ -1825,7 +1825,9 @@ async def complete_manual_task(callback: CallbackQuery, state: FSMContext) -> No
     parts = callback.data.split(":")
     scope = "root"
     scope_id = 0
-    if len(parts) == 2:
+    if len(parts) == 3 and parts[1] == "root":
+        planned_task_id = int(parts[2])
+    elif len(parts) == 2:
         planned_task_id = int(parts[1])
     elif len(parts) >= 4:
         scope = parts[1]

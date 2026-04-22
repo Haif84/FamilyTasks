@@ -1354,6 +1354,7 @@ class TaskRuntimeRepository:
                 tc.completed_by AS member_user_id,
                 u.display_name AS member_display_name,
                 pt.title AS task_title,
+                COALESCE(pt.effort_stars, 1) AS effort_stars,
                 tc.completion_mode
             FROM task_completions tc
             JOIN users u ON u.id = tc.completed_by
@@ -1380,6 +1381,7 @@ class TaskRuntimeRepository:
                 tc.history_updated_at,
                 tc.completion_mode,
                 pt.title AS task_title,
+                COALESCE(pt.effort_stars, 1) AS effort_stars,
                 u.display_name AS member_display_name
             FROM task_completions tc
             JOIN users u ON u.id = tc.completed_by
