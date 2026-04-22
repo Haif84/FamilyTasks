@@ -21,6 +21,7 @@ QUIET_RE = re.compile(r"^/quiet\s+(\d{2}:\d{2})-(\d{2}:\d{2})(?:\s+(all|[0-6]))?
 STATS_RE = re.compile(r"^/stats(?:\s+(day|week|month))?$")
 PAGE_SIZE = 10
 HISTORY_LIMIT = 10
+WEEKDAY_SHORT_RU = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 
 
 def _family_tzinfo(timezone_name: str) -> ZoneInfo | timezone:
@@ -30,10 +31,10 @@ def _family_tzinfo(timezone_name: str) -> ZoneInfo | timezone:
         return timezone.utc
 
 
-def _to_family_local_timestamp(raw_value: str, timezone_name: str) -> str:
+def _parse_raw_timestamp(raw_value: str) -> datetime | None:
     raw = (raw_value or "").strip()
     if not raw:
-        return raw_value
+        return None
     parsed: datetime | None = None
     try:
         parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
@@ -41,11 +42,146 @@ def _to_family_local_timestamp(raw_value: str, timezone_name: str) -> str:
         try:
             parsed = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
         except ValueError:
-            return raw_value
+            return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _to_family_local_datetime(raw_value: str, timezone_name: str) -> datetime | None:
+    parsed = _parse_raw_timestamp(raw_value)
+    if parsed is None:
+        return None
     local = parsed.astimezone(_family_tzinfo(timezone_name))
+    return local
+
+
+def _to_family_local_timestamp(raw_value: str, timezone_name: str) -> str:
+    local = _to_family_local_datetime(raw_value, timezone_name)
+    if local is None:
+        return raw_value
     return local.strftime("%Y-%m-%d %H:%M")
+
+
+def _build_day_pages(
+    entries: list,
+    timezone_name: str,
+    *,
+    reverse_input: bool = True,
+) -> list[dict]:
+    ordered_entries = list(reversed(entries)) if reverse_input else list(entries)
+    pages_asc: list[dict] = []
+    current_page: dict | None = None
+    current_day_key: str | None = None
+
+    def _make_page(day_key: str, weekday_short: str, header: str) -> dict:
+        return {
+            "day_key": day_key,
+            "weekday_short": weekday_short,
+            "weekday_cap": weekday_short.capitalize(),
+            "header": header,
+            "items": [],
+        }
+
+    for entry in ordered_entries:
+        raw_completed_at = str(entry["completed_at"])
+        local_dt = _to_family_local_datetime(raw_completed_at, timezone_name)
+        if local_dt is None:
+            day_key = f"raw:{raw_completed_at}"
+            weekday_short = "?"
+            day_header = "дата неизвестна:"
+            time_part = raw_completed_at
+        else:
+            date_part = local_dt.strftime("%Y-%m-%d")
+            weekday_short = WEEKDAY_SHORT_RU[local_dt.weekday()]
+            day_key = date_part
+            day_header = f"{weekday_short} ({date_part}):"
+            time_part = local_dt.strftime("%H:%M")
+        if day_key != current_day_key:
+            current_page = _make_page(day_key, weekday_short, day_header)
+            pages_asc.append(current_page)
+            current_day_key = day_key
+        current_page["items"].append((time_part, entry))
+
+    return list(reversed(pages_asc))
+
+
+def _build_day_nav_markup(
+    day_pages: list[dict],
+    day_index: int,
+    callback_builder,
+) -> InlineKeyboardMarkup | None:
+    nav: list[InlineKeyboardButton] = []
+    if day_index + 1 < len(day_pages):
+        target = day_pages[day_index + 1]["weekday_cap"]
+        nav.append(
+            InlineKeyboardButton(
+                text=f"Назад ({target}, более ранние)",
+                callback_data=callback_builder(day_index + 1),
+            )
+        )
+    if day_index > 0:
+        target = day_pages[day_index - 1]["weekday_cap"]
+        nav.append(
+            InlineKeyboardButton(
+                text=f"Вперед ({target}, более поздние)",
+                callback_data=callback_builder(day_index - 1),
+            )
+        )
+    return InlineKeyboardMarkup(inline_keyboard=[nav]) if nav else None
+
+
+def _render_day_page_lines(
+    title: str,
+    day_pages: list[dict],
+    day_index: int,
+    entry_tail_builder,
+    empty_text: str,
+) -> tuple[list[str], int]:
+    if not day_pages:
+        return ([title, empty_text], 0)
+    normalized_day_index = max(0, min(day_index, len(day_pages) - 1))
+    page = day_pages[normalized_day_index]
+    lines = [title, page["header"]]
+    for time_part, entry in page["items"]:
+        lines.append(f"- {time_part} {entry_tail_builder(entry)}")
+    return (lines, normalized_day_index)
+
+
+def _history_line(entry: dict, timezone_name: str) -> str:
+    local_completed_at = _to_family_local_timestamp(str(entry["completed_at"]), timezone_name)
+    effort_stars = int(entry["effort_stars"]) if hasattr(entry, "keys") and "effort_stars" in entry.keys() else 1
+    return f"- {local_completed_at} | {entry['task_title']} | {entry['member_display_name']} | {effort_stars}★"
+
+
+def _history_button_label(entry: dict, timezone_name: str) -> str:
+    local_completed_at = _to_family_local_timestamp(str(entry["completed_at"]), timezone_name)
+    action = _format_action_label(str(entry["task_title"]), str(entry["completion_mode"]))
+    label = f"{local_completed_at} | {action} | {entry['member_display_name']}"
+    if len(label) > 60:
+        return f"{label[:57]}..."
+    return label
+
+
+def _parse_local_datetime_to_utc(value: str, timezone_name: str) -> str | None:
+    raw = (value or "").strip()
+    try:
+        local_naive = datetime.strptime(raw, "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+    tzinfo = _family_tzinfo(timezone_name)
+    local_dt = local_naive.replace(tzinfo=tzinfo)
+    utc_dt = local_dt.astimezone(timezone.utc)
+    return utc_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _groups_editor_keyboard(groups: list) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text=f"{group['sort_order']}. {group['name']}", callback_data=f"groupedit:{group['id']}")]
+        for group in groups
+    ]
+    rows.append([InlineKeyboardButton(text="Добавить группу", callback_data="groupadd")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _format_action_label(task_title: str, completion_mode: str) -> str:
@@ -293,76 +429,106 @@ async def _send_stats(message: Message, period: str, reply_markup: ReplyKeyboard
 
 
 async def _send_recent_actions(
-    message: Message, runtime: TaskRuntimeRepository, family_id: int, timezone_name: str
+    message: Message,
+    runtime: TaskRuntimeRepository,
+    family_id: int,
+    timezone_name: str,
+    day_index: int = 0,
 ) -> None:
-    rows = await runtime.list_recent_actions(family_id, HISTORY_LIMIT, 0)
-    lines = ["Последние 10 действий:"]
-    if not rows:
-        lines.append("История пока пуста.")
-    else:
-        for row in reversed(rows):
-            lines.append(_history_line(row, timezone_name))
-    await message.answer("\n".join(lines))
+    rows = await runtime.list_recent_actions_all(family_id)
+    day_pages = _build_day_pages(rows, timezone_name, reverse_input=True)
+    lines, normalized_day_index = _render_day_page_lines(
+        "Последние действия:",
+        day_pages,
+        day_index,
+        lambda row: (
+            f"| {row['task_title']} | {row['member_display_name']} | "
+            f"{int(row['effort_stars']) if row['effort_stars'] is not None else 1}★"
+        ),
+        "История пока пуста.",
+    )
+    kb = _build_day_nav_markup(day_pages, normalized_day_index, lambda target_idx: f"statsg:{target_idx}")
+    await message.answer("\n".join(lines), reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("statsg:"))
+async def stats_global_callback(callback: CallbackQuery) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    day_index = max(0, int(callback.data.split(":")[1]))
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    runtime = TaskRuntimeRepository(db)
+    timezone_name = ctx.family_timezone or "UTC"
+    rows = await runtime.list_recent_actions_all(ctx.family_id)
+    day_pages = _build_day_pages(rows, timezone_name, reverse_input=True)
+    lines, normalized_day_index = _render_day_page_lines(
+        "Последние действия:",
+        day_pages,
+        day_index,
+        lambda row: (
+            f"| {row['task_title']} | {row['member_display_name']} | "
+            f"{int(row['effort_stars']) if row['effort_stars'] is not None else 1}★"
+        ),
+        "История пока пуста.",
+    )
+    kb = _build_day_nav_markup(day_pages, normalized_day_index, lambda target_idx: f"statsg:{target_idx}")
+    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
+    await callback.answer()
 
 
 async def _render_member_actions(
     callback: CallbackQuery,
     family_id: int,
     user_id: int,
-    offset: int,
+    day_index: int,
     runtime: TaskRuntimeRepository,
     timezone_name: str,
 ) -> None:
-    rows = await runtime.list_recent_actions_by_member(family_id, user_id, PAGE_SIZE + 1, offset)
-    has_more = len(rows) > PAGE_SIZE
-    entries = rows[:PAGE_SIZE]
-    lines = ["Последние действия участника:"]
-    if entries:
-        for row in reversed(entries):
-            local_completed_at = _to_family_local_timestamp(str(row["completed_at"]), timezone_name)
-            line = f"- {local_completed_at} - {row['task_title']} - {int(row['effort_stars'])}★"
-            comment_text = str(row["comment_text"] or "").strip()
-            if comment_text:
-                line += f" - {comment_text}"
-            lines.append(line)
-    else:
-        lines.append("Действий пока нет.")
-    nav: list[InlineKeyboardButton] = []
-    if offset > 0:
-        prev_offset = max(0, offset - PAGE_SIZE)
-        nav.append(InlineKeyboardButton(text="Назад (более поздние)", callback_data=f"statsm:{user_id}:{prev_offset}"))
-    if has_more:
-        nav.append(InlineKeyboardButton(text="Вперед (более ранние)", callback_data=f"statsm:{user_id}:{offset + PAGE_SIZE}"))
-    kb = InlineKeyboardMarkup(inline_keyboard=[nav] if nav else [])
-    await callback.message.edit_text("\n".join(lines), reply_markup=kb if nav else None)
+    rows = await runtime.list_recent_actions_by_member_all(family_id, user_id)
+    day_pages = _build_day_pages(rows, timezone_name, reverse_input=True)
+
+    def _member_tail(row) -> str:
+        line = f"- {row['task_title']} - {int(row['effort_stars'])}★"
+        comment_text = str(row["comment_text"] or "").strip()
+        if comment_text:
+            line += f" - {comment_text}"
+        return line
+
+    lines, normalized_day_index = _render_day_page_lines(
+        "Последние действия участника:",
+        day_pages,
+        day_index,
+        _member_tail,
+        "Действий пока нет.",
+    )
+    kb = _build_day_nav_markup(day_pages, normalized_day_index, lambda target_idx: f"statsm:{user_id}:{target_idx}")
+    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
 
 
 async def _render_task_actions(
     callback: CallbackQuery,
     family_id: int,
     task_id: int,
-    offset: int,
+    day_index: int,
     runtime: TaskRuntimeRepository,
     timezone_name: str,
 ) -> None:
-    rows = await runtime.list_recent_actions_by_task(family_id, task_id, PAGE_SIZE + 1, offset)
-    has_more = len(rows) > PAGE_SIZE
-    entries = rows[:PAGE_SIZE]
-    lines = ["Последние действия по задаче:"]
-    if entries:
-        for row in reversed(entries):
-            local_completed_at = _to_family_local_timestamp(str(row["completed_at"]), timezone_name)
-            lines.append(f"- {local_completed_at} — {row['display_name']}")
-    else:
-        lines.append("Действий пока нет.")
-    nav: list[InlineKeyboardButton] = []
-    if offset > 0:
-        prev_offset = max(0, offset - PAGE_SIZE)
-        nav.append(InlineKeyboardButton(text="Назад (более поздние)", callback_data=f"statst:{task_id}:{prev_offset}"))
-    if has_more:
-        nav.append(InlineKeyboardButton(text="Вперед (более ранние)", callback_data=f"statst:{task_id}:{offset + PAGE_SIZE}"))
-    kb = InlineKeyboardMarkup(inline_keyboard=[nav] if nav else [])
-    await callback.message.edit_text("\n".join(lines), reply_markup=kb if nav else None)
+    rows = await runtime.list_recent_actions_by_task_all(family_id, task_id)
+    day_pages = _build_day_pages(rows, timezone_name, reverse_input=True)
+    lines, normalized_day_index = _render_day_page_lines(
+        "Последние действия по задаче:",
+        day_pages,
+        day_index,
+        lambda row: f"— {row['display_name']}",
+        "Действий пока нет.",
+    )
+    kb = _build_day_nav_markup(day_pages, normalized_day_index, lambda target_idx: f"statst:{task_id}:{target_idx}")
+    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
 
 
 async def _build_stats_task_root_picker(
@@ -390,9 +556,9 @@ async def _build_stats_task_root_picker(
 
 @router.callback_query(F.data.startswith("statsm:"))
 async def stats_member_callback(callback: CallbackQuery) -> None:
-    _, user_id_raw, offset_raw = callback.data.split(":")
+    _, user_id_raw, day_index_raw = callback.data.split(":")
     user_id = int(user_id_raw)
-    offset = max(0, int(offset_raw))
+    day_index = max(0, int(day_index_raw))
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if ctx.family_id is None:
@@ -400,15 +566,15 @@ async def stats_member_callback(callback: CallbackQuery) -> None:
         return
     runtime = TaskRuntimeRepository(db)
     timezone_name = ctx.family_timezone or "UTC"
-    await _render_member_actions(callback, ctx.family_id, user_id, offset, runtime, timezone_name)
+    await _render_member_actions(callback, ctx.family_id, user_id, day_index, runtime, timezone_name)
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("statst:"))
 async def stats_task_callback(callback: CallbackQuery) -> None:
-    _, task_id_raw, offset_raw = callback.data.split(":")
+    _, task_id_raw, day_index_raw = callback.data.split(":")
     task_id = int(task_id_raw)
-    offset = max(0, int(offset_raw))
+    day_index = max(0, int(day_index_raw))
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if ctx.family_id is None:
@@ -416,7 +582,7 @@ async def stats_task_callback(callback: CallbackQuery) -> None:
         return
     runtime = TaskRuntimeRepository(db)
     timezone_name = ctx.family_timezone or "UTC"
-    await _render_task_actions(callback, ctx.family_id, task_id, offset, runtime, timezone_name)
+    await _render_task_actions(callback, ctx.family_id, task_id, day_index, runtime, timezone_name)
     await callback.answer()
 
 

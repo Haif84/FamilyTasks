@@ -77,17 +77,8 @@ async def _clear_callback_inline_keyboard(callback: CallbackQuery) -> None:
             pass
 
 
-def _task_description(task: dict | object) -> str:
-    raw = task["description"] if hasattr(task, "keys") and "description" in task.keys() else None
-    if raw is None:
-        return ""
-    return str(raw).strip()
-
-
-def _manual_completion_confirm_text(*, executor_name: str, task: dict | object) -> str:
-    description = _task_description(task)
-    suffix = f" ({description})" if description else ""
-    return f"Вы действительно, хотите добавить выполненую {executor_name} задачу {task['title']}{suffix}?"
+def _manual_completion_confirm_text(*, executor_phrase: str, task: dict | object) -> str:
+    return f"Вы действительно хотите добавить выполненную {executor_phrase} задачу '{task['title']}'?"
 
 
 def _manual_confirm_keyboard(scope: str, scope_id: int, task_id: int) -> InlineKeyboardMarkup:
@@ -994,8 +985,11 @@ async def _build_task_editor_payload(
     state_text = "Активна" if is_active else "Неактивна"
     comment_text = "Да" if requires_comment else "Нет"
     group_text = str(task["group_name"] or "Без группы")
+    created_by_name = str(task["created_by_name"] or "").strip()
+    created_by_text = created_by_name if created_by_name else f"ID {int(task['created_by'])}"
     lines = [
         f"Задача #{task_id}: {task['title']}",
+        f"Кем добавлено: {created_by_text}",
         f"Позиция в списке: {task['sort_order']}",
         f"Статус: {state_text}",
         f"Комментарий: {comment_text}",
@@ -1851,7 +1845,7 @@ async def complete_manual_task(callback: CallbackQuery, state: FSMContext) -> No
         manual_confirm_scope_id=scope_id,
         manual_confirm_task_id=planned_task_id,
     )
-    text = _manual_completion_confirm_text(executor_name="вашу", task=task)
+    text = _manual_completion_confirm_text(executor_phrase="вами", task=task)
     kb = _manual_confirm_keyboard(scope, scope_id, planned_task_id)
     try:
         await callback.message.edit_text(text, reply_markup=kb)
@@ -1949,7 +1943,9 @@ async def complete_manual_task_for_member(callback: CallbackQuery, state: FSMCon
     target_user_id = int(parts[1])
     scope = "root"
     scope_id = 0
-    if len(parts) == 3:
+    if len(parts) == 4 and parts[2] == "root":
+        planned_task_id = int(parts[3])
+    elif len(parts) == 3:
         planned_task_id = int(parts[2])
     elif len(parts) >= 5:
         scope = parts[2]
@@ -1985,7 +1981,7 @@ async def complete_manual_task_for_member(callback: CallbackQuery, state: FSMCon
         manual_for_confirm_task_id=planned_task_id,
         manual_for_confirm_target_user_id=target_user_id,
     )
-    text = _manual_completion_confirm_text(executor_name=member_name, task=task)
+    text = _manual_completion_confirm_text(executor_phrase=f"участником {member_name}", task=task)
     kb = _manual_for_member_confirm_keyboard(target_user_id, scope, scope_id, planned_task_id)
     try:
         await callback.message.edit_text(text, reply_markup=kb)

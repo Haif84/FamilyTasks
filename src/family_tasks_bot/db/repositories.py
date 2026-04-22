@@ -596,9 +596,12 @@ class PlannedTaskRepository:
                 pt.group_id,
                 pt.requires_comment,
                 pt.effort_stars,
+                pt.created_by,
+                COALESCE(author.display_name, author.username) AS created_by_name,
                 g.name AS group_name
             FROM planned_tasks pt
             LEFT JOIN groups g ON g.id = pt.group_id AND g.family_id = pt.family_id
+            LEFT JOIN users author ON author.id = pt.created_by
             WHERE pt.family_id = ? AND pt.id = ?
             """,
             (family_id, task_id),
@@ -1327,6 +1330,25 @@ class TaskRuntimeRepository:
         ) as cursor:
             return await cursor.fetchall()
 
+    async def list_recent_actions_by_member_all(self, family_id: int, user_id: int) -> list[aiosqlite.Row]:
+        async with self.conn.execute(
+            """
+            SELECT
+                tc.completed_at,
+                u.display_name AS member_display_name,
+                COALESCE(pt.effort_stars, 1) AS effort_stars,
+                pt.title AS task_title,
+                tc.comment_text
+            FROM task_completions tc
+            JOIN users u ON u.id = tc.completed_by
+            JOIN planned_tasks pt ON pt.id = tc.planned_task_id
+            WHERE tc.family_id = ? AND tc.completed_by = ?
+            ORDER BY tc.completed_at DESC, tc.id DESC
+            """,
+            (family_id, user_id),
+        ) as cursor:
+            return await cursor.fetchall()
+
     async def list_recent_actions_by_task(
         self, family_id: int, task_id: int, limit: int, offset: int
     ) -> list[aiosqlite.Row]:
@@ -1340,6 +1362,19 @@ class TaskRuntimeRepository:
             LIMIT ? OFFSET ?
             """,
             (family_id, task_id, limit, offset),
+        ) as cursor:
+            return await cursor.fetchall()
+
+    async def list_recent_actions_by_task_all(self, family_id: int, task_id: int) -> list[aiosqlite.Row]:
+        async with self.conn.execute(
+            """
+            SELECT tc.completed_at, u.display_name
+            FROM task_completions tc
+            JOIN users u ON u.id = tc.completed_by
+            WHERE tc.family_id = ? AND tc.planned_task_id = ?
+            ORDER BY tc.completed_at DESC, tc.id DESC
+            """,
+            (family_id, task_id),
         ) as cursor:
             return await cursor.fetchall()
 
@@ -1364,6 +1399,29 @@ class TaskRuntimeRepository:
             LIMIT ? OFFSET ?
             """,
             (family_id, limit, offset),
+        ) as cursor:
+            return await cursor.fetchall()
+
+    async def list_recent_actions_all(self, family_id: int) -> list[aiosqlite.Row]:
+        async with self.conn.execute(
+            """
+            SELECT
+                tc.id AS completion_id,
+                tc.completed_at,
+                tc.added_at,
+                tc.history_updated_at,
+                tc.completed_by AS member_user_id,
+                u.display_name AS member_display_name,
+                pt.title AS task_title,
+                COALESCE(pt.effort_stars, 1) AS effort_stars,
+                tc.completion_mode
+            FROM task_completions tc
+            JOIN users u ON u.id = tc.completed_by
+            JOIN planned_tasks pt ON pt.id = tc.planned_task_id
+            WHERE tc.family_id = ?
+            ORDER BY tc.completed_at DESC, tc.id DESC
+            """,
+            (family_id,),
         ) as cursor:
             return await cursor.fetchall()
 
