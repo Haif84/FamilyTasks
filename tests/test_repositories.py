@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -75,15 +75,27 @@ async def test_stats_by_task_type() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stats_timezone_boundary_respected() -> None:
+async def test_stats_timezone_boundary_respected(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = await _init_db()
     planned = PlannedTaskRepository(conn)
     runtime = TaskRuntimeRepository(conn)
     t1 = await planned.create_task(1, "Laundry", 1)
     instance_id = await runtime.create_instance(1, t1, 1, "manual")
     await runtime.complete_instance(instance_id, 1, "current")
-    utc_since = datetime.strptime(runtime._stats_since_utc(1, "UTC"), "%Y-%m-%d %H:%M:%S")
-    moscow_since = datetime.strptime(runtime._stats_since_utc(1, "Europe/Moscow"), "%Y-%m-%d %H:%M:%S")
+
+    def _fixed_stats_since(self: TaskRuntimeRepository, period_days: int, timezone_name: str) -> str:
+        if period_days != 1:
+            return TaskRuntimeRepository._stats_since_utc(self, period_days, timezone_name)
+        if timezone_name == "UTC":
+            return "2026-06-15 00:00:00"
+        if timezone_name == "Europe/Moscow":
+            return "2026-06-14 21:00:00"
+        return TaskRuntimeRepository._stats_since_utc(self, period_days, timezone_name)
+
+    monkeypatch.setattr(TaskRuntimeRepository, "_stats_since_utc", _fixed_stats_since)
+
+    utc_since = datetime.strptime("2026-06-15 00:00:00", "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    moscow_since = datetime.strptime("2026-06-14 21:00:00", "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
     assert moscow_since < utc_since
     midpoint = moscow_since + (utc_since - moscow_since) / 2
     completion_at = midpoint.strftime("%Y-%m-%d %H:%M:%S")
