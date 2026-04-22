@@ -305,14 +305,14 @@ async def _build_history_edit_markup_for_context(
     if day_pages:
         page = day_pages[normalized]
         rows_kb.append(
-            [InlineKeyboardButton(text=_history_edit_header_text(page, ctx), callback_data="noop")]
+            [InlineKeyboardButton(text=_history_edit_header_text(page, ctx), callback_data="statsnoop")]
         )
         for time_part, entry in page["items"]:
             cid = int(entry["completion_id"])
             label = _history_edit_row_label(mode, time_part, entry)
             rows_kb.append([InlineKeyboardButton(text=label, callback_data=f"histedit:{cid}")])
     else:
-        rows_kb.append([InlineKeyboardButton(text="История пуста", callback_data="noop")])
+        rows_kb.append([InlineKeyboardButton(text="История пуста", callback_data="statsnoop")])
     nav = _build_day_nav_markup(
         day_pages,
         normalized,
@@ -1069,6 +1069,36 @@ def _history_card_text(entry: dict, timezone_name: str) -> str:
     return "\n".join(lines)
 
 
+TELEGRAM_MESSAGE_MAX_LEN = 4096
+
+
+def _telegram_safe_message_text(text: str, max_len: int = TELEGRAM_MESSAGE_MAX_LEN) -> str:
+    raw = text or ""
+    if len(raw) <= max_len:
+        return raw
+    tail = "\n…"
+    return raw[: max_len - len(tail)] + tail
+
+
+def _history_card_text_for_telegram(entry: dict, timezone_name: str) -> str:
+    return _telegram_safe_message_text(_history_card_text(entry, timezone_name))
+
+
+async def _hist_reply_text(
+    callback: CallbackQuery,
+    text: str,
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> Message:
+    uid = int(callback.from_user.id)
+    if callback.message is None:
+        return await callback.bot.send_message(uid, text, reply_markup=reply_markup)
+    try:
+        return await callback.message.answer(text, reply_markup=reply_markup)
+    except TelegramBadRequest:
+        return await callback.bot.send_message(uid, text, reply_markup=reply_markup)
+
+
 def _history_norm_completed_at(value: str) -> str:
     raw = (value or "").strip().replace("T", " ")
     if not raw:
@@ -1104,7 +1134,7 @@ async def _history_refresh_draft_card(
     row["member_display_name"] = _history_member_display_name(members, int(draft["executor_user_id"]))
     row["completed_at"] = draft["completed_at_utc"]
     row["comment_text"] = draft.get("comment") or ""
-    text = _history_card_text(row, timezone_name)
+    text = _history_card_text_for_telegram(row, timezone_name)
     kb = _history_entry_actions_keyboard(int(draft["completion_id"]))
     try:
         await bot.edit_message_text(
@@ -1160,7 +1190,11 @@ async def stats_history_edit_back(callback: CallbackQuery, state: FSMContext) ->
     runtime = TaskRuntimeRepository(db)
     timezone_name = ctx.family_timezone or "UTC"
     kb = await _prepare_history_edit_reply_markup(state, runtime, ctx.family_id, timezone_name)
-    await callback.message.answer(HISTORY_EDIT_PROMPT, reply_markup=kb)
+    try:
+        await _hist_reply_text(callback, HISTORY_EDIT_PROMPT, reply_markup=kb)
+    except TelegramBadRequest:
+        await callback.answer("Не удалось отправить список.", show_alert=True)
+        return
     await callback.answer()
 
 
@@ -1183,7 +1217,12 @@ async def stats_history_edit_entry(callback: CallbackQuery, state: FSMContext) -
         return
     timezone_name = ctx.family_timezone or "UTC"
     kb = _history_entry_actions_keyboard(completion_id)
-    sent = await callback.message.answer(_history_card_text(entry, timezone_name), reply_markup=kb)
+    card = _history_card_text_for_telegram(entry, timezone_name)
+    try:
+        sent = await _hist_reply_text(callback, card, reply_markup=kb)
+    except TelegramBadRequest:
+        await callback.answer("Не удалось отправить карточку.", show_alert=True)
+        return
     comment_raw = entry["comment_text"] if "comment_text" in entry.keys() else None
     comment = (str(comment_raw).strip() if comment_raw is not None else "") or ""
     await state.update_data(
@@ -1238,10 +1277,16 @@ async def stats_history_edit_executor_start(callback: CallbackQuery, state: FSMC
     buttons.append([InlineKeyboardButton(text="Назад", callback_data=f"histeditexecback:{completion_id}")])
     await state.set_state(StatsStates.waiting_history_executor)
     await state.update_data(history_completion_id=completion_id)
-    await callback.message.answer(
-        "Выберите нового исполнителя:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-    )
+    try:
+        await _hist_reply_text(
+            callback,
+            "Выберите нового исполнителя:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        )
+    except TelegramBadRequest:
+        await state.set_state(None)
+        await callback.answer("Не удалось показать список исполнителей.", show_alert=True)
+        return
     await callback.answer()
 
 
@@ -1376,9 +1421,15 @@ async def stats_history_edit_comment_start(callback: CallbackQuery, state: FSMCo
         return
     await state.set_state(StatsStates.waiting_history_comment)
     await state.update_data(history_comment_completion_id=completion_id)
-    await callback.message.answer(
-        "Введите новый комментарий (пустое сообщение — очистить комментарий; «Отмена» — выйти без изменений):"
-    )
+    try:
+        await _hist_reply_text(
+            callback,
+            "Введите новый комментарий (пустое сообщение — очистить комментарий; «Отмена» — выйти без изменений):",
+        )
+    except TelegramBadRequest:
+        await state.set_state(None)
+        await callback.answer("Не удалось отправить запрос.", show_alert=True)
+        return
     await callback.answer()
 
 
@@ -1406,10 +1457,16 @@ async def stats_history_edit_time_start(callback: CallbackQuery, state: FSMConte
         current_local = _to_family_local_timestamp(str(entry["completed_at"]), timezone_name)
     await state.set_state(StatsStates.waiting_history_datetime)
     await state.update_data(history_completion_id=completion_id)
-    await callback.message.answer(
-        f"Текущее время действия (черновик): {current_local}\n"
-        f"Введите новое время в формате YYYY-MM-DD HH:MM (локальное время семьи) или «Отмена»:"
-    )
+    try:
+        await _hist_reply_text(
+            callback,
+            f"Текущее время действия (черновик): {current_local}\n"
+            f"Введите новое время в формате YYYY-MM-DD HH:MM (локальное время семьи) или «Отмена»:",
+        )
+    except TelegramBadRequest:
+        await state.set_state(None)
+        await callback.answer("Не удалось отправить запрос.", show_alert=True)
+        return
     await callback.answer()
 
 
@@ -1519,7 +1576,10 @@ async def stats_history_delete_ask(callback: CallbackQuery) -> None:
         await callback.answer("Запись не найдена.", show_alert=True)
         return
     timezone_name = ctx.family_timezone or "UTC"
-    line = _history_line(entry, timezone_name).lstrip("- ").strip()
+    line = _telegram_safe_message_text(
+        _history_line(entry, timezone_name).lstrip("- ").strip(),
+        max_len=3500,
+    )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -1528,20 +1588,30 @@ async def stats_history_delete_ask(callback: CallbackQuery) -> None:
             ]
         ]
     )
-    await callback.message.answer(
-        f"Вы точно хотите удалить запись в истории: {line}",
-        reply_markup=kb,
-    )
+    try:
+        await _hist_reply_text(
+            callback,
+            f"Вы точно хотите удалить запись в истории: {line}",
+            reply_markup=kb,
+        )
+    except TelegramBadRequest:
+        await callback.answer("Не удалось отправить подтверждение.", show_alert=True)
+        return
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("histeditdelno:"))
 async def stats_history_delete_no(callback: CallbackQuery) -> None:
     completion_id = int(callback.data.split(":")[1])
-    await callback.message.answer(
-        "Удаление отменено.",
-        reply_markup=_history_entry_actions_keyboard(completion_id),
-    )
+    try:
+        await _hist_reply_text(
+            callback,
+            "Удаление отменено.",
+            reply_markup=_history_entry_actions_keyboard(completion_id),
+        )
+    except TelegramBadRequest:
+        await callback.answer("Не удалось отправить ответ.", show_alert=True)
+        return
     await callback.answer()
 
 
@@ -1563,8 +1633,12 @@ async def stats_history_delete_yes(callback: CallbackQuery, state: FSMContext) -
         return
     timezone_name = ctx.family_timezone or "UTC"
     kb = await _prepare_history_edit_reply_markup(state, runtime, ctx.family_id, timezone_name)
-    await callback.message.answer("Запись истории удалена.")
-    await callback.message.answer(HISTORY_EDIT_PROMPT, reply_markup=kb)
+    try:
+        await _hist_reply_text(callback, "Запись истории удалена.")
+        await _hist_reply_text(callback, HISTORY_EDIT_PROMPT, reply_markup=kb)
+    except TelegramBadRequest:
+        await callback.answer("Запись удалена, но не удалось обновить список.", show_alert=True)
+        return
     await callback.answer()
 
 
