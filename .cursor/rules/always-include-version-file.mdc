@@ -1,0 +1,12 @@
+---
+description: Always include the bot version file in code-change commits
+alwaysApply: true
+---
+
+# Include Version File
+
+When making or committing code changes in this repository, always include `src/family_tasks_bot/version.py` in the change set.
+
+- Before committing, check `src/family_tasks_bot/version.py` explicitly.
+- If `src/family_tasks_bot/version.py` has local changes, stage and commit it together with the related code changes.
+- Do not leave `src/family_tasks_bot/version.py` modified but uncommitted after a code-change commit.
