@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import re
+from calendar import monthrange
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
@@ -1111,6 +1112,99 @@ def _history_norm_completed_at(value: str) -> str:
     return parsed.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _parse_completed_at_utc_sql(value: str) -> datetime:
+    raw = (value or "").strip()
+    if not raw:
+        raise ValueError("empty")
+    if "T" not in raw and " " in raw:
+        raw = raw.replace(" ", "T", 1)
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    dt = datetime.fromisoformat(raw)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _history_bump_local_datetime(
+    completed_at_utc_sql: str,
+    tz_name: str,
+    field: str,
+    delta: int,
+) -> str:
+    utc = _parse_completed_at_utc_sql(completed_at_utc_sql)
+    local = utc.astimezone(_family_tzinfo(tz_name))
+    y, m, d = local.year, local.month, local.day
+    if field == "m":
+        local2 = local + timedelta(minutes=delta)
+    elif field == "h":
+        local2 = local + timedelta(hours=delta)
+    elif field == "d":
+        local2 = local + timedelta(days=delta)
+    elif field == "M":
+        total = y * 12 + (m - 1) + delta
+        y2, m0 = divmod(total, 12)
+        m2 = m0 + 1
+        d2 = min(d, monthrange(y2, m2)[1])
+        local2 = local.replace(year=y2, month=m2, day=d2)
+    elif field == "y":
+        y2 = y + delta
+        d2 = min(d, monthrange(y2, m)[1])
+        local2 = local.replace(year=y2, day=d2)
+    else:
+        local2 = local
+    return local2.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _history_offset_display(offset_minutes: int) -> str:
+    if offset_minutes == 0:
+        return "0 мин"
+    sign = "+" if offset_minutes > 0 else "-"
+    remaining = abs(offset_minutes)
+    days, remaining = divmod(remaining, 24 * 60)
+    hours, minutes = divmod(remaining, 60)
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days} д")
+    if hours:
+        parts.append(f"{hours} ч")
+    if minutes:
+        parts.append(f"{minutes} мин")
+    return f"{sign}{' '.join(parts)}"
+
+
+def _history_datetime_keyboard(time_preview: str) -> InlineKeyboardMarkup:
+    fields = ["d", "M", "y", "h", "m"]
+    labels_up = ["День+", "Мес+", "Год+", "Час+", "Мин+"]
+    labels_dn = ["День−", "Мес−", "Год−", "Час−", "Мин−"]
+    row_up = [InlineKeyboardButton(text=labels_up[i], callback_data=f"histdt:+:{fields[i]}") for i in range(5)]
+    row_dn = [InlineKeyboardButton(text=labels_dn[i], callback_data=f"histdt:-:{fields[i]}") for i in range(5)]
+    preview = time_preview if len(time_preview) <= 64 else f"{time_preview[:61]}..."
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=preview, callback_data="statsnoop")],
+            row_up,
+            row_dn,
+            [InlineKeyboardButton(text="Назад", callback_data="histdt:back")],
+        ]
+    )
+
+
+async def _history_try_delete_message(bot, chat_id: int, message_id: int | None) -> None:
+    if message_id is None:
+        return
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=int(message_id))
+    except TelegramBadRequest:
+        pass
+
+
+async def _history_cleanup_submessages(bot, data: dict, chat_id: int) -> None:
+    await _history_try_delete_message(bot, chat_id, data.get("hist_exec_pick_msg_id"))
+    await _history_try_delete_message(bot, chat_id, data.get("hist_dt_ui_msg_id"))
+    await _history_try_delete_message(bot, chat_id, data.get("hist_comment_prompt_msg_id"))
+
+
 def _history_member_display_name(members: list[dict | object], user_id: int) -> str:
     for member in members:
         if int(member["user_id"]) == user_id:
@@ -1148,15 +1242,46 @@ async def _history_refresh_draft_card(
         pass
 
 
+async def _history_refresh_from_state(
+    state: FSMContext,
+    *,
+    bot,
+    runtime: TaskRuntimeRepository,
+    family_repo,
+    family_id: int,
+    timezone_name: str,
+) -> bool:
+    data = await state.get_data()
+    draft = data.get("hist_edit_draft")
+    if not isinstance(draft, dict):
+        return False
+    await _history_refresh_draft_card(
+        bot,
+        runtime,
+        family_repo,
+        family_id=family_id,
+        draft=draft,
+        timezone_name=timezone_name,
+    )
+    return True
+
+
 def _history_entry_actions_keyboard(completion_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Исполнитель", callback_data=f"histeditexec:{completion_id}")],
-            [InlineKeyboardButton(text="Дата/время", callback_data=f"histedittime:{completion_id}")],
+            [
+                InlineKeyboardButton(text="Исполнитель", callback_data=f"histeditexec:{completion_id}"),
+                InlineKeyboardButton(text="Дата/Время", callback_data=f"histedittime:{completion_id}"),
+            ],
             [InlineKeyboardButton(text="Комментарий", callback_data=f"histeditcomment:{completion_id}")],
-            [InlineKeyboardButton(text="Обновить", callback_data=f"histapply:{completion_id}")],
-            [InlineKeyboardButton(text="Удалить", callback_data=f"histeditdelask:{completion_id}")],
-            [InlineKeyboardButton(text="Назад", callback_data="histeditback")],
+            [
+                InlineKeyboardButton(text="Удалить", callback_data=f"histeditdelask:{completion_id}"),
+                InlineKeyboardButton(text="Обновить", callback_data=f"histapply:{completion_id}"),
+            ],
+            [
+                InlineKeyboardButton(text="Назад", callback_data="histeditback"),
+                InlineKeyboardButton(text="Отмена", callback_data="histeditcancel"),
+            ],
         ]
     )
 
@@ -1179,6 +1304,13 @@ async def stats_history_edit_menu(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "histeditback")
 async def stats_history_edit_back(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is not None:
+        data = await state.get_data()
+        await _history_cleanup_submessages(
+            callback.message.bot,
+            data,
+            int(callback.message.chat.id),
+        )
     await _clear_state_keep_stats_context(state)
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
@@ -1196,6 +1328,21 @@ async def stats_history_edit_back(callback: CallbackQuery, state: FSMContext) ->
     except TelegramBadRequest:
         await callback.answer("Не удалось отправить список.", show_alert=True)
         return
+    await callback.answer()
+
+
+@router.callback_query(F.data == "histeditcancel")
+async def stats_history_edit_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    data = await state.get_data()
+    await _history_cleanup_submessages(callback.message.bot, data, int(callback.message.chat.id))
+    await _clear_state_keep_stats_context(state)
+    try:
+        await callback.message.edit_text("Операция отменена.", reply_markup=None)
+    except TelegramBadRequest:
+        await callback.message.answer("Операция отменена.")
     await callback.answer()
 
 
@@ -1234,19 +1381,40 @@ async def stats_history_edit_entry(callback: CallbackQuery, state: FSMContext) -
             "executor_user_id": int(entry["member_user_id"]),
             "completed_at_utc": _history_norm_completed_at(str(entry["completed_at"])),
             "comment": comment,
-        }
+        },
+        hist_exec_pick_msg_id=None,
+        hist_dt_ui_msg_id=None,
+        hist_dt_baseline_utc=None,
+        hist_dt_offset_minutes=0,
+        hist_comment_prompt_msg_id=None,
     )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("histeditexecback:"))
 async def stats_history_edit_executor_picker_back(callback: CallbackQuery, state: FSMContext) -> None:
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
     if callback.message is not None:
         try:
             await callback.message.delete()
         except TelegramBadRequest:
             pass
+    await state.update_data(hist_exec_pick_msg_id=None)
     await state.set_state(None)
+    runtime = TaskRuntimeRepository(db)
+    timezone_name = ctx.family_timezone or "UTC"
+    await _history_refresh_from_state(
+        state,
+        bot=callback.bot,
+        runtime=runtime,
+        family_repo=family_repo,
+        family_id=ctx.family_id,
+        timezone_name=timezone_name,
+    )
     await callback.answer()
 
 
@@ -1261,10 +1429,12 @@ async def stats_history_edit_executor_start(callback: CallbackQuery, state: FSMC
     if not ctx.is_admin:
         await callback.answer("Нет прав.", show_alert=True)
         return
-    entry = await TaskRuntimeRepository(db).get_completion_entry(ctx.family_id, completion_id)
-    if entry is None:
-        await callback.answer("Запись не найдена.", show_alert=True)
+    data = await state.get_data()
+    draft = data.get("hist_edit_draft")
+    if not isinstance(draft, dict) or int(draft.get("completion_id", 0)) != completion_id:
+        await callback.answer("Сначала откройте запись.", show_alert=True)
         return
+    await _history_try_delete_message(callback.bot, int(callback.message.chat.id), data.get("hist_exec_pick_msg_id"))
     members = await family_repo.list_members_for_edit(ctx.family_id)
     buttons = [
         [
@@ -1279,11 +1449,12 @@ async def stats_history_edit_executor_start(callback: CallbackQuery, state: FSMC
     await state.set_state(StatsStates.waiting_history_executor)
     await state.update_data(history_completion_id=completion_id)
     try:
-        await _hist_reply_text(
+        sent = await _hist_reply_text(
             callback,
             "Выберите нового исполнителя:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         )
+        await state.update_data(hist_exec_pick_msg_id=sent.message_id)
     except TelegramBadRequest:
         await state.set_state(None)
         await callback.answer("Не удалось показать список исполнителей.", show_alert=True)
@@ -1316,6 +1487,7 @@ async def stats_history_edit_executor_save(callback: CallbackQuery, state: FSMCo
             await callback.message.delete()
         except TelegramBadRequest:
             pass
+    await state.update_data(hist_exec_pick_msg_id=None)
     await state.set_state(None)
     runtime = TaskRuntimeRepository(db)
     timezone_name = ctx.family_timezone or "UTC"
@@ -1341,6 +1513,19 @@ async def stats_history_edit_apply(callback: CallbackQuery, state: FSMContext) -
     if not ctx.is_admin:
         await callback.answer("Нет прав.", show_alert=True)
         return
+    if callback.message is not None:
+        data = await state.get_data()
+        await _history_cleanup_submessages(
+            callback.bot,
+            data,
+            int(callback.message.chat.id),
+        )
+        await state.update_data(
+            hist_exec_pick_msg_id=None,
+            hist_dt_ui_msg_id=None,
+            hist_dt_baseline_utc=None,
+            hist_comment_prompt_msg_id=None,
+        )
     data = await state.get_data()
     draft = data.get("hist_edit_draft")
     if not isinstance(draft, dict) or int(draft.get("completion_id", 0)) != completion_id:
@@ -1420,13 +1605,19 @@ async def stats_history_edit_comment_start(callback: CallbackQuery, state: FSMCo
     if not isinstance(draft, dict) or int(draft.get("completion_id", 0)) != completion_id:
         await callback.answer("Сначала откройте запись.", show_alert=True)
         return
+    await _history_try_delete_message(
+        callback.bot,
+        int(callback.message.chat.id),
+        data.get("hist_comment_prompt_msg_id"),
+    )
     await state.set_state(StatsStates.waiting_history_comment)
     await state.update_data(history_comment_completion_id=completion_id)
     try:
-        await _hist_reply_text(
+        sent = await _hist_reply_text(
             callback,
             "Введите новый комментарий (пустое сообщение — очистить комментарий; «Отмена» — выйти без изменений):",
         )
+        await state.update_data(hist_comment_prompt_msg_id=sent.message_id)
     except TelegramBadRequest:
         await state.set_state(None)
         await callback.answer("Не удалось отправить запрос.", show_alert=True)
@@ -1445,86 +1636,134 @@ async def stats_history_edit_time_start(callback: CallbackQuery, state: FSMConte
     if not ctx.is_admin:
         await callback.answer("Нет прав.", show_alert=True)
         return
-    entry = await TaskRuntimeRepository(db).get_completion_entry(ctx.family_id, completion_id)
-    if entry is None:
-        await callback.answer("Запись не найдена.", show_alert=True)
-        return
-    timezone_name = ctx.family_timezone or "UTC"
     data = await state.get_data()
     draft = data.get("hist_edit_draft")
-    if isinstance(draft, dict) and int(draft.get("completion_id", 0)) == completion_id:
-        current_local = _to_family_local_timestamp(str(draft["completed_at_utc"]), timezone_name)
-    else:
-        current_local = _to_family_local_timestamp(str(entry["completed_at"]), timezone_name)
-    await state.set_state(StatsStates.waiting_history_datetime)
-    await state.update_data(history_completion_id=completion_id)
+    if not isinstance(draft, dict) or int(draft.get("completion_id", 0)) != completion_id:
+        await callback.answer("Сначала откройте запись.", show_alert=True)
+        return
+    timezone_name = ctx.family_timezone or "UTC"
+    baseline = str(draft.get("completed_at_utc") or "").strip()
+    if not baseline:
+        await callback.answer("Некорректное время черновика.", show_alert=True)
+        return
+    prev_dt = data.get("hist_dt_ui_msg_id")
+    await _history_try_delete_message(callback.bot, int(callback.message.chat.id), prev_dt)
+    await state.update_data(hist_dt_baseline_utc=baseline)
+    current_local = _to_family_local_timestamp(baseline, timezone_name)
+    offset_minutes = int(data.get("hist_dt_offset_minutes") or 0)
     try:
-        await _hist_reply_text(
+        sent = await _hist_reply_text(
             callback,
-            f"Текущее время действия (черновик): {current_local}\n"
-            f"Введите новое время в формате YYYY-MM-DD HH:MM (локальное время семьи) или «Отмена»:",
+            f"Текущая дата/время (база): {current_local}\n"
+            f"Измените время кнопками ниже (новое значение на первой кнопке).\n"
+            f"Относительное смещение: {_history_offset_display(offset_minutes)}",
+            reply_markup=_history_datetime_keyboard(current_local),
         )
+        await state.update_data(hist_dt_ui_msg_id=sent.message_id)
     except TelegramBadRequest:
-        await state.set_state(None)
         await callback.answer("Не удалось отправить запрос.", show_alert=True)
         return
     await callback.answer()
 
 
-@router.message(StatsStates.waiting_history_datetime)
-async def stats_history_edit_time_save(message: Message, state: FSMContext) -> None:
+@router.callback_query(F.data.startswith("histdt:"))
+async def stats_history_edit_datetime_adjust(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    parts = callback.data.split(":")
     db, user_repo, family_repo = get_repositories()
-    ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if ctx.family_id is None:
-        await _clear_state_keep_stats_context(state)
-        await message.answer("Вы пока не добавлены в семью.")
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
         return
     if not ctx.is_admin:
-        await _clear_state_keep_stats_context(state)
-        await message.answer("Эта команда доступна только администраторам.")
+        await callback.answer("Нет прав.", show_alert=True)
         return
-    raw_value = (message.text or "").strip()
-    if raw_value.lower() == "отмена":
-        await state.set_state(None)
-        await message.answer("Изменение времени отменено.")
-        return
-    timezone_name = ctx.family_timezone or "UTC"
-    new_completed_at = _parse_local_datetime_to_utc(raw_value, timezone_name)
-    if new_completed_at is None:
-        await message.answer("Некорректный формат. Используйте YYYY-MM-DD HH:MM")
-        return
-    data = await state.get_data()
-    completion_id = int(data.get("history_completion_id", 0))
-    if completion_id <= 0:
-        await state.set_state(None)
-        await message.answer("Не удалось определить запись истории.")
-        return
-    draft = data.get("hist_edit_draft")
-    if not isinstance(draft, dict) or int(draft.get("completion_id", 0)) != completion_id:
-        await state.set_state(None)
-        await message.answer("Черновик записи не найден. Откройте запись снова.")
-        return
-    draft["completed_at_utc"] = _history_norm_completed_at(new_completed_at)
-    await state.update_data(hist_edit_draft=draft, history_completion_id=None)
-    await state.set_state(None)
     runtime = TaskRuntimeRepository(db)
-    await _history_refresh_draft_card(
-        message.bot,
-        runtime,
-        family_repo,
+    timezone_name = ctx.family_timezone or "UTC"
+    data = await state.get_data()
+    draft = data.get("hist_edit_draft")
+    if not isinstance(draft, dict):
+        await callback.answer("Черновик записи не найден.", show_alert=True)
+        return
+    if len(parts) == 2 and parts[1] == "back":
+        await _history_try_delete_message(
+            callback.bot,
+            int(callback.message.chat.id),
+            data.get("hist_dt_ui_msg_id"),
+        )
+        await state.update_data(hist_dt_ui_msg_id=None, hist_dt_baseline_utc=None)
+        await _history_refresh_from_state(
+            state,
+            bot=callback.bot,
+            runtime=runtime,
+            family_repo=family_repo,
+            family_id=ctx.family_id,
+            timezone_name=timezone_name,
+        )
+        await callback.answer()
+        return
+    if len(parts) != 3:
+        await callback.answer()
+        return
+    _, sign, field = parts
+    delta = 1 if sign == "+" else -1 if sign == "-" else 0
+    if delta == 0 or field not in {"d", "M", "y", "h", "m"}:
+        await callback.answer()
+        return
+    cur_utc = str(draft.get("completed_at_utc") or "").strip()
+    if not cur_utc:
+        await callback.answer("Некорректное время.", show_alert=True)
+        return
+    try:
+        new_utc = _history_bump_local_datetime(cur_utc, timezone_name, field, delta)
+        cur_dt = _parse_completed_at_utc_sql(cur_utc)
+        new_dt = _parse_completed_at_utc_sql(new_utc)
+    except ValueError:
+        await callback.answer("Некорректное время.", show_alert=True)
+        return
+    draft["completed_at_utc"] = _history_norm_completed_at(new_utc)
+    offset_delta_minutes = round((new_dt - cur_dt).total_seconds() / 60)
+    offset_minutes = int(data.get("hist_dt_offset_minutes") or 0) + offset_delta_minutes
+    await state.update_data(
+        hist_edit_draft=draft,
+        hist_dt_offset_minutes=offset_minutes,
+    )
+    preview = _to_family_local_timestamp(str(draft["completed_at_utc"]), timezone_name)
+    baseline = str(data.get("hist_dt_baseline_utc") or cur_utc)
+    header = (
+        f"Текущая дата/время (база): {_to_family_local_timestamp(baseline, timezone_name)}\n"
+        f"Измените время кнопками ниже (новое значение на первой кнопке).\n"
+        f"Относительное смещение: {_history_offset_display(offset_minutes)}"
+    )
+    try:
+        await callback.message.edit_text(header, reply_markup=_history_datetime_keyboard(preview))
+    except TelegramBadRequest:
+        pass
+    await _history_refresh_from_state(
+        state,
+        bot=callback.bot,
+        runtime=runtime,
+        family_repo=family_repo,
         family_id=ctx.family_id,
-        draft=draft,
         timezone_name=timezone_name,
     )
-    await message.answer("Время изменено в черновике. Нажмите «Обновить», чтобы сохранить в базе.")
+    await callback.answer("Время изменено в черновике. Нажмите «Обновить», чтобы сохранить в базе.")
 
 
 @router.message(StatsStates.waiting_history_comment)
 async def stats_history_edit_comment_save(message: Message, state: FSMContext) -> None:
     raw = (message.text or "").strip()
     if raw.lower() == "отмена":
+        data = await state.get_data()
+        await _history_try_delete_message(
+            message.bot,
+            int(message.chat.id),
+            data.get("hist_comment_prompt_msg_id"),
+        )
         await state.set_state(None)
-        await state.update_data(history_comment_completion_id=None)
+        await state.update_data(history_comment_completion_id=None, hist_comment_prompt_msg_id=None)
         await message.answer("Редактирование комментария отменено.")
         return
     db, user_repo, family_repo = get_repositories()
@@ -1545,7 +1784,16 @@ async def stats_history_edit_comment_save(message: Message, state: FSMContext) -
         await message.answer("Не удалось определить запись истории.")
         return
     draft["comment"] = raw
-    await state.update_data(hist_edit_draft=draft, history_comment_completion_id=None)
+    await _history_try_delete_message(
+        message.bot,
+        int(message.chat.id),
+        data.get("hist_comment_prompt_msg_id"),
+    )
+    await state.update_data(
+        hist_edit_draft=draft,
+        history_comment_completion_id=None,
+        hist_comment_prompt_msg_id=None,
+    )
     await state.set_state(None)
     runtime = TaskRuntimeRepository(db)
     timezone_name = ctx.family_timezone or "UTC"
@@ -1627,6 +1875,13 @@ async def stats_history_delete_yes(callback: CallbackQuery, state: FSMContext) -
     if not ctx.is_admin:
         await callback.answer("Нет прав.", show_alert=True)
         return
+    if callback.message is not None:
+        data = await state.get_data()
+        await _history_cleanup_submessages(
+            callback.bot,
+            data,
+            int(callback.message.chat.id),
+        )
     runtime = TaskRuntimeRepository(db)
     deleted = await runtime.delete_completion_entry(ctx.family_id, completion_id)
     if not deleted:
