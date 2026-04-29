@@ -409,6 +409,51 @@ def _manual_fin_local_display(utc_sql: str, tz_name: str) -> str:
     return dt.astimezone(tz).strftime("%Y-%m-%d %H:%M")
 
 
+def _manual_fin_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _manual_fin_utc_now_sql(offset_minutes: int = 0) -> str:
+    dt = datetime.now(timezone.utc) + timedelta(minutes=offset_minutes)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _manual_fin_offset_display(offset_minutes: int) -> str:
+    if offset_minutes == 0:
+        return "0 мин"
+    sign = "+" if offset_minutes > 0 else "-"
+    remaining = abs(offset_minutes)
+    days, remaining = divmod(remaining, 24 * 60)
+    hours, minutes = divmod(remaining, 60)
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days} д")
+    if hours:
+        parts.append(f"{hours} ч")
+    if minutes:
+        parts.append(f"{minutes} мин")
+    return f"{sign}{' '.join(parts)}"
+
+
+def _manual_fin_carried_settings(
+    data: dict,
+    family_id: int,
+    default_completed_by_user_id: int,
+) -> tuple[int, int, bool]:
+    if _manual_fin_int(data.get("m_fin_carry_family_id")) != family_id:
+        return default_completed_by_user_id, 0, False
+    completed_by_user_id = _manual_fin_int(
+        data.get("m_fin_carry_completed_by"),
+        default_completed_by_user_id,
+    )
+    offset_minutes = _manual_fin_int(data.get("m_fin_carry_dt_offset_minutes"))
+    offset_is_set = _manual_fin_int(data.get("m_fin_carry_dt_offset_is_set")) == 1
+    return completed_by_user_id, offset_minutes, offset_is_set
+
+
 async def _manual_fin_executor_phrase(ctx: AccessContext, family_repo, data: dict) -> str:
     uid_exec = int(data.get("m_fin_completed_by", 0))
     if uid_exec == ctx.user_id:
@@ -432,8 +477,11 @@ async def _manual_fin_seed_state(
     task_requires_comment: bool,
     initial_comment: str,
     chat_id: int,
+    dt_offset_minutes: int = 0,
+    dt_offset_is_set: bool = False,
 ) -> None:
-    utc_now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    offset_minutes = int(dt_offset_minutes)
+    utc_now = _manual_fin_utc_now_sql(offset_minutes if dt_offset_is_set else 0)
     await state.update_data(
         m_fin_planned_task_id=planned_task_id,
         m_fin_completed_by=completed_by_user_id,
@@ -446,6 +494,8 @@ async def _manual_fin_seed_state(
         m_fin_task_requires_comment=1 if task_requires_comment else 0,
         m_fin_comment=initial_comment.strip(),
         m_fin_completed_at_utc=utc_now,
+        m_fin_dt_offset_minutes=offset_minutes,
+        m_fin_dt_offset_is_set=1 if dt_offset_is_set else 0,
         m_fin_chat_id=chat_id,
         m_fin_final_msg_id=None,
         m_fin_dt_ui_msg_id=None,
@@ -472,6 +522,9 @@ async def _manual_fin_answer_final(
         _manual_completion_confirm_text(executor_phrase=executor_phrase, task=task),
         f"Время выполнения: {when}",
     ]
+    if int(data.get("m_fin_dt_offset_is_set") or 0) == 1:
+        offset_minutes = _manual_fin_int(data.get("m_fin_dt_offset_minutes"))
+        lines.append(f"Относительное смещение: {_manual_fin_offset_display(offset_minutes)}")
     if req_c:
         lines.append(f"Комментарий: {comment or '(пусто)'}")
     text = "\n".join(lines)
@@ -559,6 +612,9 @@ async def _manual_fin_success_finish(
     target_user_id = int(data.get("m_fin_completed_by", 0))
     member_name = str(data.get("m_fin_target_name", "")).strip()
     chat_id = int(data.get("m_fin_chat_id") or message.chat.id)
+    carry_completed_by = target_user_id
+    carry_offset_minutes = _manual_fin_int(data.get("m_fin_dt_offset_minutes"))
+    carry_offset_is_set = int(data.get("m_fin_dt_offset_is_set") or 0) == 1
     await _manual_fin_cleanup_submessages(message.bot, data, chat_id)
     success_text = f"Задача {task_title} добавлена"
     mid = data.get("m_fin_final_msg_id")
@@ -578,6 +634,12 @@ async def _manual_fin_success_finish(
     family_id = ctx.family_id
     if not add_more:
         return
+    await state.update_data(
+        m_fin_carry_family_id=family_id,
+        m_fin_carry_completed_by=carry_completed_by,
+        m_fin_carry_dt_offset_minutes=carry_offset_minutes,
+        m_fin_carry_dt_offset_is_set=1 if carry_offset_is_set else 0,
+    )
     if for_member:
         display_name = member_name
         if not display_name and target_user_id > 0:
@@ -716,11 +778,12 @@ async def current_tasks(message: Message) -> None:
 
 
 @router.message(F.text == "Добавить выполненную")
-async def add_completed(message: Message) -> None:
+async def add_completed(message: Message, state: FSMContext) -> None:
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if await deny_if_no_family(message, ctx):
         return
+    await state.clear()
     runtime = TaskRuntimeRepository(db)
     kb = await _manual_done_root_keyboard(runtime, family_repo, ctx.family_id)
     await message.answer(
@@ -734,7 +797,7 @@ async def add_completed(message: Message) -> None:
 
 
 @router.message(F.text == "Добавить выполненную (за ...)")
-async def add_completed_for_member(message: Message) -> None:
+async def add_completed_for_member(message: Message, state: FSMContext) -> None:
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
     if await deny_if_no_family(message, ctx):
@@ -742,6 +805,7 @@ async def add_completed_for_member(message: Message) -> None:
     if not can_add_to_execution(ctx):
         await message.answer("Добавление задач за участника доступно только администраторам.")
         return
+    await state.clear()
     members = await family_repo.list_members_for_edit(ctx.family_id)
     kb = _manual_done_for_member_picker_keyboard(members)
     await message.answer("Выберите участника семьи:", reply_markup=kb)
@@ -2051,11 +2115,17 @@ async def complete_manual_task(callback: CallbackQuery, state: FSMContext) -> No
     if task is None:
         await callback.answer("Задача не найдена.", show_alert=True)
         return
+    carry_data = await state.get_data()
+    completed_by_user_id, dt_offset_minutes, dt_offset_is_set = _manual_fin_carried_settings(
+        carry_data,
+        ctx.family_id,
+        ctx.user_id,
+    )
     if bool(task["requires_comment"]):
         await state.update_data(
             manual_comment_leads_to_final_menu=True,
             manual_comment_task_id=planned_task_id,
-            manual_comment_completed_by_user_id=ctx.user_id,
+            manual_comment_completed_by_user_id=completed_by_user_id,
             manual_comment_actor_user_id=ctx.user_id,
             manual_comment_task_title=str(task["title"]),
             manual_comment_add_more=False,
@@ -2064,6 +2134,8 @@ async def complete_manual_task(callback: CallbackQuery, state: FSMContext) -> No
             manual_comment_target_user_id=0,
             manual_comment_target_member_name="",
             manual_comment_final_msg_id=callback.message.message_id,
+            manual_comment_dt_offset_minutes=dt_offset_minutes,
+            manual_comment_dt_offset_is_set=1 if dt_offset_is_set else 0,
         )
         await state.set_state(RuntimeTaskStates.waiting_manual_comment)
         await callback.message.answer(
@@ -2074,7 +2146,7 @@ async def complete_manual_task(callback: CallbackQuery, state: FSMContext) -> No
     await _manual_fin_seed_state(
         state,
         planned_task_id=planned_task_id,
-        completed_by_user_id=ctx.user_id,
+        completed_by_user_id=completed_by_user_id,
         actor_user_id=ctx.user_id,
         scope=scope,
         scope_id=scope_id,
@@ -2084,6 +2156,8 @@ async def complete_manual_task(callback: CallbackQuery, state: FSMContext) -> No
         task_requires_comment=False,
         initial_comment="",
         chat_id=callback.message.chat.id,
+        dt_offset_minutes=dt_offset_minutes,
+        dt_offset_is_set=dt_offset_is_set,
     )
     await state.update_data(m_fin_final_msg_id=callback.message.message_id)
     await _manual_fin_answer_final(callback.message, state, ctx, family_repo, task)
@@ -2128,11 +2202,17 @@ async def complete_manual_task_for_member(callback: CallbackQuery, state: FSMCon
     if task is None:
         await callback.answer("Задача не найдена.", show_alert=True)
         return
+    carry_data = await state.get_data()
+    completed_by_user_id, dt_offset_minutes, dt_offset_is_set = _manual_fin_carried_settings(
+        carry_data,
+        ctx.family_id,
+        target_user_id,
+    )
     if bool(task["requires_comment"]):
         await state.update_data(
             manual_comment_leads_to_final_menu=True,
             manual_comment_task_id=planned_task_id,
-            manual_comment_completed_by_user_id=target_user_id,
+            manual_comment_completed_by_user_id=completed_by_user_id,
             manual_comment_actor_user_id=ctx.user_id,
             manual_comment_task_title=str(task["title"]),
             manual_comment_add_more=False,
@@ -2141,6 +2221,8 @@ async def complete_manual_task_for_member(callback: CallbackQuery, state: FSMCon
             manual_comment_target_user_id=target_user_id,
             manual_comment_target_member_name=member_name,
             manual_comment_final_msg_id=callback.message.message_id,
+            manual_comment_dt_offset_minutes=dt_offset_minutes,
+            manual_comment_dt_offset_is_set=1 if dt_offset_is_set else 0,
         )
         await state.set_state(RuntimeTaskStates.waiting_manual_comment)
         await callback.message.answer(
@@ -2153,7 +2235,7 @@ async def complete_manual_task_for_member(callback: CallbackQuery, state: FSMCon
     await _manual_fin_seed_state(
         state,
         planned_task_id=planned_task_id,
-        completed_by_user_id=target_user_id,
+        completed_by_user_id=completed_by_user_id,
         actor_user_id=ctx.user_id,
         scope=scope,
         scope_id=scope_id,
@@ -2163,6 +2245,8 @@ async def complete_manual_task_for_member(callback: CallbackQuery, state: FSMCon
         task_requires_comment=False,
         initial_comment="",
         chat_id=callback.message.chat.id,
+        dt_offset_minutes=dt_offset_minutes,
+        dt_offset_is_set=dt_offset_is_set,
     )
     await state.update_data(m_fin_final_msg_id=callback.message.message_id)
     await _manual_fin_answer_final(callback.message, state, ctx, family_repo, task)
@@ -2272,6 +2356,8 @@ async def manual_completion_final_menu(callback: CallbackQuery, state: FSMContex
             return
         tz = ctx.family_timezone or "UTC"
         baseline = str(data.get("m_fin_completed_at_utc") or "")
+        offset_is_set = int(data.get("m_fin_dt_offset_is_set") or 0) == 1
+        offset_minutes = _manual_fin_int(data.get("m_fin_dt_offset_minutes"))
         await state.update_data(m_fin_dt_baseline_utc=baseline)
         prev_dt = data.get("m_fin_dt_ui_msg_id")
         await _manual_fin_try_delete_message(callback.message.bot, chat_id, prev_dt)
@@ -2280,6 +2366,8 @@ async def manual_completion_final_menu(callback: CallbackQuery, state: FSMContex
             f"Текущая дата/время (база): {_manual_fin_local_display(baseline, tz)}\n"
             f"Измените время кнопками ниже (новое значение на первой кнопке)."
         )
+        if offset_is_set:
+            header += f"\nОтносительное смещение: {_manual_fin_offset_display(offset_minutes)}"
         sent = await callback.message.answer(
             header,
             reply_markup=_manual_completion_datetime_keyboard(preview),
@@ -2388,12 +2476,25 @@ async def manual_completion_datetime_adjust(callback: CallbackQuery, state: FSMC
     except ValueError:
         await callback.answer("Некорректное время.", show_alert=True)
         return
-    await state.update_data(m_fin_completed_at_utc=new_utc)
+    try:
+        cur_dt = _parse_completed_at_utc_sql(cur_utc)
+        new_dt = _parse_completed_at_utc_sql(new_utc)
+    except ValueError:
+        await callback.answer("Некорректное время.", show_alert=True)
+        return
+    offset_delta_minutes = round((new_dt - cur_dt).total_seconds() / 60)
+    offset_minutes = _manual_fin_int(data.get("m_fin_dt_offset_minutes")) + offset_delta_minutes
+    await state.update_data(
+        m_fin_completed_at_utc=new_utc,
+        m_fin_dt_offset_minutes=offset_minutes,
+        m_fin_dt_offset_is_set=1,
+    )
     preview = _manual_fin_local_display(new_utc, tz_name)
     baseline = str(data.get("m_fin_dt_baseline_utc") or cur_utc)
     header = (
         f"Текущая дата/время (база): {_manual_fin_local_display(baseline, tz_name)}\n"
-        f"Измените время кнопками ниже (новое значение на первой кнопке)."
+        f"Измените время кнопками ниже (новое значение на первой кнопке).\n"
+        f"Относительное смещение: {_manual_fin_offset_display(offset_minutes)}"
     )
     try:
         await callback.message.edit_text(
@@ -2489,6 +2590,8 @@ async def manual_comment_entered(message: Message, state: FSMContext) -> None:
     target_user_id = int(data.get("manual_comment_target_user_id", 0))
     target_member_name = str(data.get("manual_comment_target_member_name", "")).strip()
     final_list_mid = data.get("manual_comment_final_msg_id")
+    dt_offset_minutes = _manual_fin_int(data.get("manual_comment_dt_offset_minutes"))
+    dt_offset_is_set = int(data.get("manual_comment_dt_offset_is_set") or 0) == 1
     if planned_task_id <= 0 or completed_by_user_id <= 0 or actor_user_id <= 0:
         await state.clear()
         await message.answer("Не удалось определить задачу для комментария.")
@@ -2519,6 +2622,8 @@ async def manual_comment_entered(message: Message, state: FSMContext) -> None:
         task_requires_comment=True,
         initial_comment=text,
         chat_id=message.chat.id,
+        dt_offset_minutes=dt_offset_minutes,
+        dt_offset_is_set=dt_offset_is_set,
     )
     if final_list_mid is not None:
         await state.update_data(m_fin_final_msg_id=int(final_list_mid))
