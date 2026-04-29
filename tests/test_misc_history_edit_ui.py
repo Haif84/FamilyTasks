@@ -2,7 +2,6 @@ from family_tasks_bot.handlers.misc import (
     _history_bump_local_datetime,
     _history_datetime_keyboard,
     _history_entry_actions_keyboard,
-    _history_offset_display,
 )
 
 
@@ -38,8 +37,9 @@ def test_history_datetime_keyboard_layout() -> None:
     assert rows[3][0].callback_data == "histdt:back"
 
 
-def test_history_offset_display_and_bump() -> None:
-    assert _history_offset_display(0) == "0 мин"
-    assert _history_offset_display(-180) == "-3 ч"
+def test_history_bump_without_offset_label_in_preview() -> None:
     bumped = _history_bump_local_datetime("2026-04-29 20:00:00", "UTC", "h", -3)
     assert bumped.startswith("2026-04-29 17:00")
+    kb = _history_datetime_keyboard("2026-04-29 17:00")
+    preview = kb.inline_keyboard[0][0].text
+    assert "Относительное смещение" not in preview

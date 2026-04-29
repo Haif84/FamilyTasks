@@ -1156,23 +1156,6 @@ def _history_bump_local_datetime(
     return local2.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _history_offset_display(offset_minutes: int) -> str:
-    if offset_minutes == 0:
-        return "0 мин"
-    sign = "+" if offset_minutes > 0 else "-"
-    remaining = abs(offset_minutes)
-    days, remaining = divmod(remaining, 24 * 60)
-    hours, minutes = divmod(remaining, 60)
-    parts: list[str] = []
-    if days:
-        parts.append(f"{days} д")
-    if hours:
-        parts.append(f"{hours} ч")
-    if minutes:
-        parts.append(f"{minutes} мин")
-    return f"{sign}{' '.join(parts)}"
-
-
 def _history_datetime_keyboard(time_preview: str) -> InlineKeyboardMarkup:
     fields = ["d", "M", "y", "h", "m"]
     labels_up = ["День+", "Мес+", "Год+", "Час+", "Мин+"]
@@ -1650,13 +1633,11 @@ async def stats_history_edit_time_start(callback: CallbackQuery, state: FSMConte
     await _history_try_delete_message(callback.bot, int(callback.message.chat.id), prev_dt)
     await state.update_data(hist_dt_baseline_utc=baseline)
     current_local = _to_family_local_timestamp(baseline, timezone_name)
-    offset_minutes = int(data.get("hist_dt_offset_minutes") or 0)
     try:
         sent = await _hist_reply_text(
             callback,
             f"Текущая дата/время (база): {current_local}\n"
-            f"Измените время кнопками ниже (новое значение на первой кнопке).\n"
-            f"Относительное смещение: {_history_offset_display(offset_minutes)}",
+            f"Измените время кнопками ниже (новое значение на первой кнопке).",
             reply_markup=_history_datetime_keyboard(current_local),
         )
         await state.update_data(hist_dt_ui_msg_id=sent.message_id)
@@ -1734,8 +1715,7 @@ async def stats_history_edit_datetime_adjust(callback: CallbackQuery, state: FSM
     baseline = str(data.get("hist_dt_baseline_utc") or cur_utc)
     header = (
         f"Текущая дата/время (база): {_to_family_local_timestamp(baseline, timezone_name)}\n"
-        f"Измените время кнопками ниже (новое значение на первой кнопке).\n"
-        f"Относительное смещение: {_history_offset_display(offset_minutes)}"
+        f"Измените время кнопками ниже (новое значение на первой кнопке)."
     )
     try:
         await callback.message.edit_text(header, reply_markup=_history_datetime_keyboard(preview))
