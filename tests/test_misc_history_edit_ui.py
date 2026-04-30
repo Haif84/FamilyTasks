@@ -25,6 +25,7 @@ def test_history_datetime_keyboard_layout() -> None:
         "histdt:+:M",
         "histdt:+:y",
         "histdt:+:h",
+        "histdt:+:m5",
         "histdt:+:m",
     ]
     assert [btn.callback_data for btn in rows[2]] == [
@@ -32,6 +33,7 @@ def test_history_datetime_keyboard_layout() -> None:
         "histdt:-:M",
         "histdt:-:y",
         "histdt:-:h",
+        "histdt:-:m5",
         "histdt:-:m",
     ]
     assert rows[3][0].callback_data == "histdt:back"
@@ -40,6 +42,8 @@ def test_history_datetime_keyboard_layout() -> None:
 def test_history_bump_without_offset_label_in_preview() -> None:
     bumped = _history_bump_local_datetime("2026-04-29 20:00:00", "UTC", "h", -3)
     assert bumped.startswith("2026-04-29 17:00")
+    bumped_plus_five = _history_bump_local_datetime("2026-04-29 20:00:00", "UTC", "m", 5)
+    assert bumped_plus_five.startswith("2026-04-29 20:05")
     kb = _history_datetime_keyboard("2026-04-29 17:00")
     preview = kb.inline_keyboard[0][0].text
     assert "Относительное смещение" not in preview

@@ -1450,11 +1450,11 @@ def _history_bump_local_datetime(
 
 
 def _history_datetime_keyboard(time_preview: str) -> InlineKeyboardMarkup:
-    fields = ["d", "M", "y", "h", "m"]
-    labels_up = ["День+", "Мес+", "Год+", "Час+", "Мин+"]
-    labels_dn = ["День−", "Мес−", "Год−", "Час−", "Мин−"]
-    row_up = [InlineKeyboardButton(text=labels_up[i], callback_data=f"histdt:+:{fields[i]}") for i in range(5)]
-    row_dn = [InlineKeyboardButton(text=labels_dn[i], callback_data=f"histdt:-:{fields[i]}") for i in range(5)]
+    fields = ["d", "M", "y", "h", "m5", "m"]
+    labels_up = ["День+", "Мес+", "Год+", "Час+", "5мин+", "Мин+"]
+    labels_dn = ["День−", "Мес−", "Год−", "Час−", "5мин−", "Мин−"]
+    row_up = [InlineKeyboardButton(text=labels_up[i], callback_data=f"histdt:+:{fields[i]}") for i in range(6)]
+    row_dn = [InlineKeyboardButton(text=labels_dn[i], callback_data=f"histdt:-:{fields[i]}") for i in range(6)]
     preview = time_preview if len(time_preview) <= 64 else f"{time_preview[:61]}..."
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -1983,6 +1983,9 @@ async def stats_history_edit_datetime_adjust(callback: CallbackQuery, state: FSM
         return
     _, sign, field = parts
     delta = 1 if sign == "+" else -1 if sign == "-" else 0
+    if field == "m5":
+        field = "m"
+        delta *= 5
     if delta == 0 or field not in {"d", "M", "y", "h", "m"}:
         await callback.answer()
         return
