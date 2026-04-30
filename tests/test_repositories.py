@@ -314,6 +314,39 @@ async def test_add_manual_completion_explicit_completed_at() -> None:
 
 
 @pytest.mark.asyncio
+async def test_week_stats_with_offset_and_availability() -> None:
+    conn = await _init_db()
+    planned = PlannedTaskRepository(conn)
+    runtime = TaskRuntimeRepository(conn)
+    task_id = await planned.create_task(1, "Weekly task", 1)
+    await runtime.add_manual_completion(1, task_id, 1, completed_at_utc="2026-04-21 10:00:00")
+
+    original = TaskRuntimeRepository._week_bounds_utc
+
+    def _fixed_week_bounds(self: TaskRuntimeRepository, timezone_name: str, week_offset: int = 0):
+        starts = {
+            0: ("2026-04-28 00:00:00", "2026-05-05 00:00:00", "2026-04-28", "2026-05-04"),
+            -1: ("2026-04-21 00:00:00", "2026-04-28 00:00:00", "2026-04-21", "2026-04-27"),
+            -2: ("2026-04-14 00:00:00", "2026-04-21 00:00:00", "2026-04-14", "2026-04-20"),
+        }
+        return starts.get(week_offset, original(self, timezone_name, week_offset))
+
+    TaskRuntimeRepository._week_bounds_utc = _fixed_week_bounds  # type: ignore[method-assign]
+    try:
+        cur_rows, _, _, cur_start, _ = await runtime.stats_summary_for_week(1, "UTC", week_offset=0)
+        prev_rows, _, _, prev_start, _ = await runtime.stats_summary_for_week(1, "UTC", week_offset=-1)
+        assert cur_start == "2026-04-28"
+        assert prev_start == "2026-04-21"
+        assert len(cur_rows) == 0
+        assert len(prev_rows) == 1
+        assert await runtime.has_completions_for_week(1, "UTC", week_offset=-1) is True
+        assert await runtime.has_completions_for_week(1, "UTC", week_offset=-2) is False
+    finally:
+        TaskRuntimeRepository._week_bounds_utc = original  # type: ignore[method-assign]
+    await conn.close()
+
+
+@pytest.mark.asyncio
 async def test_alice_link_code_can_be_consumed_once() -> None:
     conn = await _init_db()
     users = UserRepository(conn)

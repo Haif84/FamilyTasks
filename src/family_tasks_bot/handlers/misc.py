@@ -132,6 +132,29 @@ def _build_day_nav_markup(
     return InlineKeyboardMarkup(inline_keyboard=[[left_button, middle_button, right_button]])
 
 
+def _weekly_nav_keyboard(
+    *,
+    current_week_offset: int,
+    current_week_start: str,
+    prev_week_start: str,
+    left_enabled: bool,
+) -> InlineKeyboardMarkup:
+    left_button = InlineKeyboardButton(text=f"< ({prev_week_start})", callback_data="statsnoop")
+    if left_enabled:
+        left_button = InlineKeyboardButton(
+            text=f"< ({prev_week_start})",
+            callback_data=f"statsw:{current_week_offset - 1}",
+        )
+    right_button = InlineKeyboardButton(text=f"> ({current_week_start})", callback_data="statsnoop")
+    if current_week_offset < 0:
+        right_button = InlineKeyboardButton(
+            text=f"> ({current_week_start})",
+            callback_data=f"statsw:{current_week_offset + 1}",
+        )
+    middle_button = InlineKeyboardButton(text="Назад", callback_data="statsback:global")
+    return InlineKeyboardMarkup(inline_keyboard=[[left_button, middle_button, right_button]])
+
+
 def _render_day_page_lines(
     title: str,
     day_pages: list[dict],
@@ -440,9 +463,12 @@ async def stats_current_week(message: Message) -> None:
         return
     runtime = TaskRuntimeRepository(db)
     timezone_name = ctx.family_timezone or "UTC"
-    by_user, active, scheduled, start_date, end_date = await runtime.stats_summary_current_week(ctx.family_id, timezone_name)
-    by_stars = await runtime.stats_stars_by_user_current_week(ctx.family_id, timezone_name)
-    by_task, _, _ = await runtime.stats_by_task_type_current_week(ctx.family_id, timezone_name)
+    week_offset = 0
+    by_user, active, scheduled, start_date, end_date = await runtime.stats_summary_for_week(
+        ctx.family_id, timezone_name, week_offset=week_offset
+    )
+    by_stars = await runtime.stats_stars_by_user_for_week(ctx.family_id, timezone_name, week_offset=week_offset)
+    by_task, _, _ = await runtime.stats_by_task_type_for_week(ctx.family_id, timezone_name, week_offset=week_offset)
     lines = [
         f"Статистика за неделю ({start_date} - {end_date}):",
         f"Часовой пояс семьи: {timezone_name}",
@@ -463,7 +489,76 @@ async def stats_current_week(message: Message) -> None:
             lines.append(f"- {row['title']}: {row['cnt']}")
     lines.append(f"Активные задачи: {active}")
     lines.append(f"Запланированные задачи: {scheduled}")
-    await message.answer("\n".join(lines), reply_markup=stats_menu(is_admin=ctx.is_admin))
+    _, _, prev_week_start, _ = runtime._week_bounds_utc(timezone_name, week_offset - 1)
+    left_enabled = await runtime.has_completions_for_week(ctx.family_id, timezone_name, week_offset=week_offset - 1)
+    kb = _weekly_nav_keyboard(
+        current_week_offset=week_offset,
+        current_week_start=start_date,
+        prev_week_start=prev_week_start,
+        left_enabled=left_enabled,
+    )
+    await message.answer("\n".join(lines), reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("statsw:"))
+async def stats_week_callback(callback: CallbackQuery) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    week_offset = int(callback.data.split(":")[1])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    runtime = TaskRuntimeRepository(db)
+    timezone_name = ctx.family_timezone or "UTC"
+    if week_offset > 0:
+        await callback.answer()
+        return
+    if week_offset < 0:
+        exists = await runtime.has_completions_for_week(ctx.family_id, timezone_name, week_offset=week_offset)
+        if not exists:
+            await callback.answer()
+            return
+    by_user, active, scheduled, start_date, end_date = await runtime.stats_summary_for_week(
+        ctx.family_id, timezone_name, week_offset=week_offset
+    )
+    by_stars = await runtime.stats_stars_by_user_for_week(ctx.family_id, timezone_name, week_offset=week_offset)
+    by_task, _, _ = await runtime.stats_by_task_type_for_week(ctx.family_id, timezone_name, week_offset=week_offset)
+    lines = [
+        f"Статистика за неделю ({start_date} - {end_date}):",
+        f"Часовой пояс семьи: {timezone_name}",
+    ]
+    if by_user:
+        lines.append("Выполнено по участникам:")
+        for row in by_user:
+            lines.append(f"- {row['display_name']}: {row['cnt']}")
+    else:
+        lines.append("Пока нет выполнений.")
+    if by_stars:
+        lines.append("Заработано звёзд по участникам:")
+        for row in by_stars:
+            lines.append(f"- {row['display_name']}: {row['stars']}")
+    if by_task:
+        lines.append("По типам задач:")
+        for row in by_task[:10]:
+            lines.append(f"- {row['title']}: {row['cnt']}")
+    lines.append(f"Активные задачи: {active}")
+    lines.append(f"Запланированные задачи: {scheduled}")
+    _, _, prev_week_start, _ = runtime._week_bounds_utc(timezone_name, week_offset - 1)
+    left_enabled = await runtime.has_completions_for_week(ctx.family_id, timezone_name, week_offset=week_offset - 1)
+    kb = _weekly_nav_keyboard(
+        current_week_offset=week_offset,
+        current_week_start=start_date,
+        prev_week_start=prev_week_start,
+        left_enabled=left_enabled,
+    )
+    try:
+        await callback.message.edit_text("\n".join(lines), reply_markup=kb)
+    except TelegramBadRequest:
+        pass
+    await callback.answer()
 
 
 @router.message(NavStates.in_stats_menu, F.text == "По члену семьи")

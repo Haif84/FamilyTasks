@@ -1198,26 +1198,36 @@ class TaskRuntimeRepository:
         since_utc = since_local.astimezone(timezone.utc)
         return since_utc.strftime("%Y-%m-%d %H:%M:%S")
 
-    def _current_week_since_utc(self, timezone_name: str) -> tuple[str, str, str]:
+    def _week_bounds_utc(self, timezone_name: str, week_offset: int = 0) -> tuple[str, str, str, str]:
         try:
             tz = ZoneInfo(timezone_name)
         except Exception:
             tz = FALLBACK_TIMEZONES.get(timezone_name, timezone.utc)
         now_local = datetime.now(timezone.utc).astimezone(tz)
-        week_start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
-            days=now_local.weekday()
+        week_start_local = (
+            now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+            - timedelta(days=now_local.weekday())
+            + timedelta(days=7 * int(week_offset))
         )
+        next_week_start_local = week_start_local + timedelta(days=7)
         week_start_utc = week_start_local.astimezone(timezone.utc)
+        next_week_start_utc = next_week_start_local.astimezone(timezone.utc)
         return (
             week_start_utc.strftime("%Y-%m-%d %H:%M:%S"),
+            next_week_start_utc.strftime("%Y-%m-%d %H:%M:%S"),
             week_start_local.strftime("%Y-%m-%d"),
-            now_local.strftime("%Y-%m-%d"),
+            (next_week_start_local - timedelta(days=1)).strftime("%Y-%m-%d"),
         )
 
     async def stats_summary_current_week(
         self, family_id: int, timezone_name: str = "UTC"
     ) -> tuple[list[aiosqlite.Row], int, int, str, str]:
-        since_utc, start_local_date, end_local_date = self._current_week_since_utc(timezone_name)
+        return await self.stats_summary_for_week(family_id, timezone_name, week_offset=0)
+
+    async def stats_summary_for_week(
+        self, family_id: int, timezone_name: str = "UTC", week_offset: int = 0
+    ) -> tuple[list[aiosqlite.Row], int, int, str, str]:
+        since_utc, until_utc, start_local_date, end_local_date = self._week_bounds_utc(timezone_name, week_offset)
         async with self.conn.execute(
             """
             SELECT u.display_name, COUNT(*) AS cnt
@@ -1225,10 +1235,11 @@ class TaskRuntimeRepository:
             JOIN users u ON u.id = tc.completed_by
             WHERE tc.family_id = ?
               AND datetime(tc.completed_at) >= datetime(?)
+              AND datetime(tc.completed_at) < datetime(?)
             GROUP BY u.id, u.display_name
             ORDER BY cnt DESC
             """,
-            (family_id, since_utc),
+            (family_id, since_utc, until_utc),
         ) as cursor:
             by_user = await cursor.fetchall()
         async with self.conn.execute(
@@ -1246,7 +1257,12 @@ class TaskRuntimeRepository:
     async def stats_stars_by_user_current_week(
         self, family_id: int, timezone_name: str = "UTC"
     ) -> list[aiosqlite.Row]:
-        since_utc, _, _ = self._current_week_since_utc(timezone_name)
+        return await self.stats_stars_by_user_for_week(family_id, timezone_name, week_offset=0)
+
+    async def stats_stars_by_user_for_week(
+        self, family_id: int, timezone_name: str = "UTC", week_offset: int = 0
+    ) -> list[aiosqlite.Row]:
+        since_utc, until_utc, _, _ = self._week_bounds_utc(timezone_name, week_offset)
         async with self.conn.execute(
             """
             SELECT
@@ -1257,17 +1273,23 @@ class TaskRuntimeRepository:
             JOIN planned_tasks pt ON pt.id = tc.planned_task_id
             WHERE tc.family_id = ?
               AND datetime(tc.completed_at) >= datetime(?)
+              AND datetime(tc.completed_at) < datetime(?)
             GROUP BY u.id, u.display_name
             ORDER BY stars DESC, u.display_name
             """,
-            (family_id, since_utc),
+            (family_id, since_utc, until_utc),
         ) as cursor:
             return await cursor.fetchall()
 
     async def stats_by_task_type_current_week(
         self, family_id: int, timezone_name: str = "UTC"
     ) -> tuple[list[aiosqlite.Row], str, str]:
-        since_utc, start_local_date, end_local_date = self._current_week_since_utc(timezone_name)
+        return await self.stats_by_task_type_for_week(family_id, timezone_name, week_offset=0)
+
+    async def stats_by_task_type_for_week(
+        self, family_id: int, timezone_name: str = "UTC", week_offset: int = 0
+    ) -> tuple[list[aiosqlite.Row], str, str]:
+        since_utc, until_utc, start_local_date, end_local_date = self._week_bounds_utc(timezone_name, week_offset)
         async with self.conn.execute(
             """
             SELECT pt.title, COUNT(*) AS cnt
@@ -1275,13 +1297,29 @@ class TaskRuntimeRepository:
             JOIN planned_tasks pt ON pt.id = tc.planned_task_id
             WHERE tc.family_id = ?
               AND datetime(tc.completed_at) >= datetime(?)
+              AND datetime(tc.completed_at) < datetime(?)
             GROUP BY pt.id, pt.title
             ORDER BY cnt DESC, pt.title
             """,
-            (family_id, since_utc),
+            (family_id, since_utc, until_utc),
         ) as cursor:
             by_task = await cursor.fetchall()
         return by_task, start_local_date, end_local_date
+
+    async def has_completions_for_week(self, family_id: int, timezone_name: str = "UTC", week_offset: int = 0) -> bool:
+        since_utc, until_utc, _, _ = self._week_bounds_utc(timezone_name, week_offset)
+        async with self.conn.execute(
+            """
+            SELECT 1
+            FROM task_completions tc
+            WHERE tc.family_id = ?
+              AND datetime(tc.completed_at) >= datetime(?)
+              AND datetime(tc.completed_at) < datetime(?)
+            LIMIT 1
+            """,
+            (family_id, since_utc, until_utc),
+        ) as cursor:
+            return await cursor.fetchone() is not None
 
     async def stats_summary(
         self, family_id: int, period_days: int, timezone_name: str = "UTC"
