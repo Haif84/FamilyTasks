@@ -1219,6 +1219,29 @@ class TaskRuntimeRepository:
             (next_week_start_local - timedelta(days=1)).strftime("%Y-%m-%d"),
         )
 
+    def _month_bounds_utc(self, timezone_name: str, month_offset: int = 0) -> tuple[str, str, str, str]:
+        try:
+            tz = ZoneInfo(timezone_name)
+        except Exception:
+            tz = FALLBACK_TIMEZONES.get(timezone_name, timezone.utc)
+        now_local = datetime.now(timezone.utc).astimezone(tz)
+        total_month = now_local.year * 12 + (now_local.month - 1) + int(month_offset)
+        y, m0 = divmod(total_month, 12)
+        m = m0 + 1
+        month_start_local = datetime(y, m, 1, 0, 0, 0, tzinfo=tz)
+        if m == 12:
+            next_month_start_local = datetime(y + 1, 1, 1, 0, 0, 0, tzinfo=tz)
+        else:
+            next_month_start_local = datetime(y, m + 1, 1, 0, 0, 0, tzinfo=tz)
+        month_start_utc = month_start_local.astimezone(timezone.utc)
+        next_month_start_utc = next_month_start_local.astimezone(timezone.utc)
+        return (
+            month_start_utc.strftime("%Y-%m-%d %H:%M:%S"),
+            next_month_start_utc.strftime("%Y-%m-%d %H:%M:%S"),
+            month_start_local.strftime("%Y-%m-%d"),
+            (next_month_start_local - timedelta(days=1)).strftime("%Y-%m-%d"),
+        )
+
     async def stats_summary_current_week(
         self, family_id: int, timezone_name: str = "UTC"
     ) -> tuple[list[aiosqlite.Row], int, int, str, str]:
@@ -1308,6 +1331,93 @@ class TaskRuntimeRepository:
 
     async def has_completions_for_week(self, family_id: int, timezone_name: str = "UTC", week_offset: int = 0) -> bool:
         since_utc, until_utc, _, _ = self._week_bounds_utc(timezone_name, week_offset)
+        async with self.conn.execute(
+            """
+            SELECT 1
+            FROM task_completions tc
+            WHERE tc.family_id = ?
+              AND datetime(tc.completed_at) >= datetime(?)
+              AND datetime(tc.completed_at) < datetime(?)
+            LIMIT 1
+            """,
+            (family_id, since_utc, until_utc),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def stats_summary_for_month(
+        self, family_id: int, timezone_name: str = "UTC", month_offset: int = 0
+    ) -> tuple[list[aiosqlite.Row], int, int, str, str]:
+        since_utc, until_utc, start_local_date, end_local_date = self._month_bounds_utc(timezone_name, month_offset)
+        async with self.conn.execute(
+            """
+            SELECT u.display_name, COUNT(*) AS cnt
+            FROM task_completions tc
+            JOIN users u ON u.id = tc.completed_by
+            WHERE tc.family_id = ?
+              AND datetime(tc.completed_at) >= datetime(?)
+              AND datetime(tc.completed_at) < datetime(?)
+            GROUP BY u.id, u.display_name
+            ORDER BY cnt DESC
+            """,
+            (family_id, since_utc, until_utc),
+        ) as cursor:
+            by_user = await cursor.fetchall()
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM task_instances WHERE family_id = ? AND status = 'pending'",
+            (family_id,),
+        ) as cursor:
+            active = int((await cursor.fetchone())["cnt"])
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM task_instances WHERE family_id = ? AND status = 'scheduled'",
+            (family_id,),
+        ) as cursor:
+            scheduled = int((await cursor.fetchone())["cnt"])
+        return by_user, active, scheduled, start_local_date, end_local_date
+
+    async def stats_stars_by_user_for_month(
+        self, family_id: int, timezone_name: str = "UTC", month_offset: int = 0
+    ) -> list[aiosqlite.Row]:
+        since_utc, until_utc, _, _ = self._month_bounds_utc(timezone_name, month_offset)
+        async with self.conn.execute(
+            """
+            SELECT
+                u.display_name,
+                SUM(COALESCE(pt.effort_stars, 1)) AS stars
+            FROM task_completions tc
+            JOIN users u ON u.id = tc.completed_by
+            JOIN planned_tasks pt ON pt.id = tc.planned_task_id
+            WHERE tc.family_id = ?
+              AND datetime(tc.completed_at) >= datetime(?)
+              AND datetime(tc.completed_at) < datetime(?)
+            GROUP BY u.id, u.display_name
+            ORDER BY stars DESC, u.display_name
+            """,
+            (family_id, since_utc, until_utc),
+        ) as cursor:
+            return await cursor.fetchall()
+
+    async def stats_by_task_type_for_month(
+        self, family_id: int, timezone_name: str = "UTC", month_offset: int = 0
+    ) -> tuple[list[aiosqlite.Row], str, str]:
+        since_utc, until_utc, start_local_date, end_local_date = self._month_bounds_utc(timezone_name, month_offset)
+        async with self.conn.execute(
+            """
+            SELECT pt.title, COUNT(*) AS cnt
+            FROM task_completions tc
+            JOIN planned_tasks pt ON pt.id = tc.planned_task_id
+            WHERE tc.family_id = ?
+              AND datetime(tc.completed_at) >= datetime(?)
+              AND datetime(tc.completed_at) < datetime(?)
+            GROUP BY pt.id, pt.title
+            ORDER BY cnt DESC, pt.title
+            """,
+            (family_id, since_utc, until_utc),
+        ) as cursor:
+            by_task = await cursor.fetchall()
+        return by_task, start_local_date, end_local_date
+
+    async def has_completions_for_month(self, family_id: int, timezone_name: str = "UTC", month_offset: int = 0) -> bool:
+        since_utc, until_utc, _, _ = self._month_bounds_utc(timezone_name, month_offset)
         async with self.conn.execute(
             """
             SELECT 1

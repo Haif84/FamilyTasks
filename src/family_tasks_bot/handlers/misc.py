@@ -108,6 +108,40 @@ def _build_day_pages(
     return list(reversed(pages_asc))
 
 
+def _build_week_pages(
+    entries: list,
+    timezone_name: str,
+    *,
+    reverse_input: bool = True,
+) -> list[dict]:
+    ordered_entries = list(reversed(entries)) if reverse_input else list(entries)
+    pages_asc: list[dict] = []
+    current_page: dict | None = None
+    current_week_key: str | None = None
+
+    for entry in ordered_entries:
+        raw_completed_at = str(entry["completed_at"])
+        local_dt = _to_family_local_datetime(raw_completed_at, timezone_name)
+        if local_dt is None:
+            week_start = raw_completed_at
+            day_part = raw_completed_at
+        else:
+            ws = (local_dt - timedelta(days=local_dt.weekday())).date()
+            week_start = ws.strftime("%Y-%m-%d")
+            day_part = local_dt.strftime("%Y-%m-%d")
+        if week_start != current_week_key:
+            current_page = {
+                "day_key": week_start,
+                "weekday_cap": "Неделя",
+                "header": f"Неделя ({week_start}):",
+                "items": [],
+            }
+            pages_asc.append(current_page)
+            current_week_key = week_start
+        current_page["items"].append((day_part, entry))
+    return list(reversed(pages_asc))
+
+
 def _build_day_nav_markup(
     day_pages: list[dict],
     day_index: int,
@@ -150,6 +184,29 @@ def _weekly_nav_keyboard(
         right_button = InlineKeyboardButton(
             text=f"> ({current_week_start})",
             callback_data=f"statsw:{current_week_offset + 1}",
+        )
+    middle_button = InlineKeyboardButton(text="Назад", callback_data="statsback:global")
+    return InlineKeyboardMarkup(inline_keyboard=[[left_button, middle_button, right_button]])
+
+
+def _monthly_nav_keyboard(
+    *,
+    current_month_offset: int,
+    current_month_start: str,
+    prev_month_start: str,
+    left_enabled: bool,
+) -> InlineKeyboardMarkup:
+    left_button = InlineKeyboardButton(text=f"< ({prev_month_start})", callback_data="statsnoop")
+    if left_enabled:
+        left_button = InlineKeyboardButton(
+            text=f"< ({prev_month_start})",
+            callback_data=f"statsmth:{current_month_offset - 1}",
+        )
+    right_button = InlineKeyboardButton(text=f"> ({current_month_start})", callback_data="statsnoop")
+    if current_month_offset < 0:
+        right_button = InlineKeyboardButton(
+            text=f"> ({current_month_start})",
+            callback_data=f"statsmth:{current_month_offset + 1}",
         )
     middle_button = InlineKeyboardButton(text="Назад", callback_data="statsback:global")
     return InlineKeyboardMarkup(inline_keyboard=[[left_button, middle_button, right_button]])
@@ -305,11 +362,13 @@ async def _load_day_pages_for_stats_context(
     mode = str(ctx.get("mode") or "global")
     if mode == "member":
         rows = await runtime.list_recent_actions_by_member_all(family_id, int(ctx["user_id"]))
+        return _build_day_pages(rows, timezone_name, reverse_input=True)
     elif mode == "task":
         rows = await runtime.list_recent_actions_by_task_all(family_id, int(ctx["task_id"]))
+        return _build_week_pages(rows, timezone_name, reverse_input=True)
     else:
         rows = await runtime.list_recent_actions_all(family_id)
-    return _build_day_pages(rows, timezone_name, reverse_input=True)
+        return _build_day_pages(rows, timezone_name, reverse_input=True)
 
 
 async def _build_history_edit_markup_for_context(
@@ -500,6 +559,52 @@ async def stats_current_week(message: Message) -> None:
     await message.answer("\n".join(lines), reply_markup=kb)
 
 
+@router.message(NavStates.in_stats_menu, F.text == "Текущий месяц")
+async def stats_current_month(message: Message) -> None:
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+    if ctx.family_id is None:
+        await message.answer("Вы пока не добавлены в семью.")
+        return
+    runtime = TaskRuntimeRepository(db)
+    timezone_name = ctx.family_timezone or "UTC"
+    month_offset = 0
+    by_user, active, scheduled, start_date, end_date = await runtime.stats_summary_for_month(
+        ctx.family_id, timezone_name, month_offset=month_offset
+    )
+    by_stars = await runtime.stats_stars_by_user_for_month(ctx.family_id, timezone_name, month_offset=month_offset)
+    by_task, _, _ = await runtime.stats_by_task_type_for_month(ctx.family_id, timezone_name, month_offset=month_offset)
+    lines = [
+        f"Статистика за месяц ({start_date} - {end_date}):",
+        f"Часовой пояс семьи: {timezone_name}",
+    ]
+    if by_user:
+        lines.append("Выполнено по участникам:")
+        for row in by_user:
+            lines.append(f"- {row['display_name']}: {row['cnt']}")
+    else:
+        lines.append("Пока нет выполнений.")
+    if by_stars:
+        lines.append("Заработано звёзд по участникам:")
+        for row in by_stars:
+            lines.append(f"- {row['display_name']}: {row['stars']}")
+    if by_task:
+        lines.append("По типам задач:")
+        for row in by_task[:10]:
+            lines.append(f"- {row['title']}: {row['cnt']}")
+    lines.append(f"Активные задачи: {active}")
+    lines.append(f"Запланированные задачи: {scheduled}")
+    _, _, prev_month_start, _ = runtime._month_bounds_utc(timezone_name, month_offset - 1)
+    left_enabled = await runtime.has_completions_for_month(ctx.family_id, timezone_name, month_offset=month_offset - 1)
+    kb = _monthly_nav_keyboard(
+        current_month_offset=month_offset,
+        current_month_start=start_date,
+        prev_month_start=prev_month_start,
+        left_enabled=left_enabled,
+    )
+    await message.answer("\n".join(lines), reply_markup=kb)
+
+
 @router.callback_query(F.data.startswith("statsw:"))
 async def stats_week_callback(callback: CallbackQuery) -> None:
     if callback.message is None:
@@ -552,6 +657,67 @@ async def stats_week_callback(callback: CallbackQuery) -> None:
         current_week_offset=week_offset,
         current_week_start=start_date,
         prev_week_start=prev_week_start,
+        left_enabled=left_enabled,
+    )
+    try:
+        await callback.message.edit_text("\n".join(lines), reply_markup=kb)
+    except TelegramBadRequest:
+        pass
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("statsmth:"))
+async def stats_month_callback(callback: CallbackQuery) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    month_offset = int(callback.data.split(":")[1])
+    db, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    runtime = TaskRuntimeRepository(db)
+    timezone_name = ctx.family_timezone or "UTC"
+    if month_offset > 0:
+        await callback.answer()
+        return
+    if month_offset < 0:
+        exists = await runtime.has_completions_for_month(ctx.family_id, timezone_name, month_offset=month_offset)
+        if not exists:
+            await callback.answer()
+            return
+    by_user, active, scheduled, start_date, end_date = await runtime.stats_summary_for_month(
+        ctx.family_id, timezone_name, month_offset=month_offset
+    )
+    by_stars = await runtime.stats_stars_by_user_for_month(ctx.family_id, timezone_name, month_offset=month_offset)
+    by_task, _, _ = await runtime.stats_by_task_type_for_month(ctx.family_id, timezone_name, month_offset=month_offset)
+    lines = [
+        f"Статистика за месяц ({start_date} - {end_date}):",
+        f"Часовой пояс семьи: {timezone_name}",
+    ]
+    if by_user:
+        lines.append("Выполнено по участникам:")
+        for row in by_user:
+            lines.append(f"- {row['display_name']}: {row['cnt']}")
+    else:
+        lines.append("Пока нет выполнений.")
+    if by_stars:
+        lines.append("Заработано звёзд по участникам:")
+        for row in by_stars:
+            lines.append(f"- {row['display_name']}: {row['stars']}")
+    if by_task:
+        lines.append("По типам задач:")
+        for row in by_task[:10]:
+            lines.append(f"- {row['title']}: {row['cnt']}")
+    lines.append(f"Активные задачи: {active}")
+    lines.append(f"Запланированные задачи: {scheduled}")
+    _, _, prev_month_start, _ = runtime._month_bounds_utc(timezone_name, month_offset - 1)
+    left_enabled = await runtime.has_completions_for_month(ctx.family_id, timezone_name, month_offset=month_offset - 1)
+    kb = _monthly_nav_keyboard(
+        current_month_offset=month_offset,
+        current_month_start=start_date,
+        prev_month_start=prev_month_start,
         left_enabled=left_enabled,
     )
     try:
@@ -773,7 +939,7 @@ async def _render_task_actions(
     callback: CallbackQuery,
     family_id: int,
     task_id: int,
-    day_index: int,
+    week_index: int,
     runtime: TaskRuntimeRepository,
     timezone_name: str,
     state: FSMContext,
@@ -781,17 +947,19 @@ async def _render_task_actions(
     source_token: str = "root",
 ) -> None:
     rows = await runtime.list_recent_actions_by_task_all(family_id, task_id)
-    day_pages = _build_day_pages(rows, timezone_name, reverse_input=True)
-    lines, normalized_day_index = _render_day_page_lines(
-        "Последние действия по задаче:",
-        day_pages,
-        day_index,
-        lambda row: f"— {row['member_display_name']}",
-        "Действий пока нет.",
-    )
+    week_pages = _build_week_pages(rows, timezone_name, reverse_input=True)
+    if not week_pages:
+        lines = ["Последние действия по задаче:", "Действий пока нет."]
+        normalized_week_index = 0
+    else:
+        normalized_week_index = max(0, min(week_index, len(week_pages) - 1))
+        page = week_pages[normalized_week_index]
+        lines = ["Последние действия по задаче:", page["header"]]
+        for day_part, row in page["items"]:
+            lines.append(f"- {day_part} — {row['member_display_name']}")
     kb = _build_day_nav_markup(
-        day_pages,
-        normalized_day_index,
+        week_pages,
+        normalized_week_index,
         lambda target_idx: f"statst:{task_id}:{target_idx}:{source_token}",
         f"statsback:task:{source_token}",
     )
@@ -799,7 +967,7 @@ async def _render_task_actions(
     await _save_stats_history_context(
         state,
         mode="task",
-        day_index=normalized_day_index,
+        day_index=normalized_week_index,
         task_id=task_id,
         task_title=task_title,
         source_token=source_token,
@@ -864,9 +1032,9 @@ async def stats_member_callback(callback: CallbackQuery, state: FSMContext) -> N
 @router.callback_query(F.data.startswith("statst:"))
 async def stats_task_callback(callback: CallbackQuery, state: FSMContext) -> None:
     parts = callback.data.split(":")
-    _, task_id_raw, day_index_raw, *source_parts = parts
+    _, task_id_raw, week_index_raw, *source_parts = parts
     task_id = int(task_id_raw)
-    day_index = max(0, int(day_index_raw))
+    week_index = max(0, int(week_index_raw))
     source_token = source_parts[0] if source_parts else "root"
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
@@ -882,7 +1050,7 @@ async def stats_task_callback(callback: CallbackQuery, state: FSMContext) -> Non
         callback,
         ctx.family_id,
         task_id,
-        day_index,
+        week_index,
         runtime,
         timezone_name,
         state,
@@ -1055,7 +1223,7 @@ async def stats_history_edit_nav_task(callback: CallbackQuery, state: FSMContext
         return
     task_id = int(m.group(1))
     source_token = m.group(2)
-    day_index = max(0, int(m.group(3)))
+    week_index = max(0, int(m.group(3)))
     db, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
     if ctx.family_id is None:
@@ -1068,7 +1236,7 @@ async def stats_history_edit_nav_task(callback: CallbackQuery, state: FSMContext
         callback,
         state,
         mode="task",
-        day_index=day_index,
+        day_index=week_index,
         user_id=None,
         member_display_name=None,
         task_id=task_id,

@@ -44,15 +44,14 @@ def misc_menu(is_admin: bool) -> ReplyKeyboardMarkup:
 
 
 def stats_menu(is_admin: bool) -> ReplyKeyboardMarkup:
-    labels = [
-        "По члену семьи",
-        "По задаче",
-        "Текущая неделя",
+    rows: list[list[KeyboardButton]] = [
+        [KeyboardButton(text="По члену семьи"), KeyboardButton(text="По задаче")],
+        [KeyboardButton(text="Текущая неделя"), KeyboardButton(text="Текущий месяц")],
     ]
     if is_admin:
-        labels.append("Правка")
-    labels.append("Назад")
-    rows = _rows_of_two(labels)
+        rows.append([KeyboardButton(text="Назад"), KeyboardButton(text="Правка")])
+    else:
+        rows.append([KeyboardButton(text="Назад")])
     return ReplyKeyboardMarkup(
         keyboard=rows,
         resize_keyboard=True,
