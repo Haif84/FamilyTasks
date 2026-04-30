@@ -181,10 +181,12 @@ def _weekly_nav_keyboard(
     *,
     current_week_offset: int,
     current_week_start: str,
+    next_week_start: str,
     prev_week_start: str,
     left_enabled: bool,
 ) -> InlineKeyboardMarkup:
     current_week_label = current_week_start[5:] if re.match(r"^\d{4}-\d{2}-\d{2}$", current_week_start) else current_week_start
+    next_week_label = next_week_start[5:] if re.match(r"^\d{4}-\d{2}-\d{2}$", next_week_start) else next_week_start
     prev_week_label = prev_week_start[5:] if re.match(r"^\d{4}-\d{2}-\d{2}$", prev_week_start) else prev_week_start
 
     left_button = InlineKeyboardButton(text=" ", callback_data="statsnoop")
@@ -196,7 +198,7 @@ def _weekly_nav_keyboard(
     right_button = InlineKeyboardButton(text=" ", callback_data="statsnoop")
     if current_week_offset < 0:
         right_button = InlineKeyboardButton(
-            text=f"({current_week_label}) >",
+            text=f"({next_week_label}) >",
             callback_data=f"statsw:{current_week_offset + 1}",
         )
     middle_button = InlineKeyboardButton(text="Назад", callback_data="statsback:global")
@@ -573,10 +575,12 @@ async def stats_current_week(message: Message) -> None:
     lines.append(f"Активные задачи: {active}")
     lines.append(f"Запланированные задачи: {scheduled}")
     _, _, prev_week_start, _ = runtime._week_bounds_utc(timezone_name, week_offset - 1)
+    _, _, next_week_start, _ = runtime._week_bounds_utc(timezone_name, week_offset + 1)
     left_enabled = await runtime.has_completions_for_week(ctx.family_id, timezone_name, week_offset=week_offset - 1)
     kb = _weekly_nav_keyboard(
         current_week_offset=week_offset,
         current_week_start=start_date,
+        next_week_start=next_week_start,
         prev_week_start=prev_week_start,
         left_enabled=left_enabled,
     )
@@ -676,10 +680,12 @@ async def stats_week_callback(callback: CallbackQuery) -> None:
     lines.append(f"Активные задачи: {active}")
     lines.append(f"Запланированные задачи: {scheduled}")
     _, _, prev_week_start, _ = runtime._week_bounds_utc(timezone_name, week_offset - 1)
+    _, _, next_week_start, _ = runtime._week_bounds_utc(timezone_name, week_offset + 1)
     left_enabled = await runtime.has_completions_for_week(ctx.family_id, timezone_name, week_offset=week_offset - 1)
     kb = _weekly_nav_keyboard(
         current_week_offset=week_offset,
         current_week_start=start_date,
+        next_week_start=next_week_start,
         prev_week_start=prev_week_start,
         left_enabled=left_enabled,
     )

@@ -6,6 +6,7 @@ def test_weekly_nav_keyboard_states() -> None:
     kb_current = _weekly_nav_keyboard(
         current_week_offset=0,
         current_week_start="2026-04-28",
+        next_week_start="2026-05-05",
         prev_week_start="2026-04-21",
         left_enabled=False,
     )
@@ -19,6 +20,7 @@ def test_weekly_nav_keyboard_states() -> None:
     kb_prev = _weekly_nav_keyboard(
         current_week_offset=-1,
         current_week_start="2026-04-21",
+        next_week_start="2026-04-28",
         prev_week_start="2026-04-14",
         left_enabled=True,
     )
@@ -26,7 +28,7 @@ def test_weekly_nav_keyboard_states() -> None:
     assert row_prev[0].text == "< (04-14)"
     assert row_prev[0].callback_data == "statsw:-2"
     assert row_prev[1].callback_data == "statsback:global"
-    assert row_prev[2].text == "(04-21) >"
+    assert row_prev[2].text == "(04-28) >"
     assert row_prev[2].callback_data == "statsw:0"
 
 
