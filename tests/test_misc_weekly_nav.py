@@ -1,4 +1,4 @@
-from family_tasks_bot.handlers.misc import _monthly_nav_keyboard, _weekly_nav_keyboard
+from family_tasks_bot.handlers.misc import _build_day_nav_markup, _monthly_nav_keyboard, _weekly_nav_keyboard
 from family_tasks_bot.keyboards.reply import stats_menu
 
 
@@ -10,8 +10,10 @@ def test_weekly_nav_keyboard_states() -> None:
         left_enabled=False,
     )
     row_current = kb_current.inline_keyboard[0]
+    assert row_current[0].text == " "
     assert row_current[0].callback_data == "statsnoop"
     assert row_current[1].callback_data == "statsback:global"
+    assert row_current[2].text == " "
     assert row_current[2].callback_data == "statsnoop"
 
     kb_prev = _weekly_nav_keyboard(
@@ -21,8 +23,10 @@ def test_weekly_nav_keyboard_states() -> None:
         left_enabled=True,
     )
     row_prev = kb_prev.inline_keyboard[0]
+    assert row_prev[0].text == "< (04-14)"
     assert row_prev[0].callback_data == "statsw:-2"
     assert row_prev[1].callback_data == "statsback:global"
+    assert row_prev[2].text == "(04-21) >"
     assert row_prev[2].callback_data == "statsw:0"
 
 
@@ -34,8 +38,10 @@ def test_monthly_nav_keyboard_states() -> None:
         left_enabled=False,
     )
     row_current = kb_current.inline_keyboard[0]
+    assert row_current[0].text == " "
     assert row_current[0].callback_data == "statsnoop"
     assert row_current[1].callback_data == "statsback:global"
+    assert row_current[2].text == " "
     assert row_current[2].callback_data == "statsnoop"
 
     kb_prev = _monthly_nav_keyboard(
@@ -45,9 +51,31 @@ def test_monthly_nav_keyboard_states() -> None:
         left_enabled=True,
     )
     row_prev = kb_prev.inline_keyboard[0]
+    assert row_prev[0].text == "< (фев-26)"
     assert row_prev[0].callback_data == "statsmth:-2"
     assert row_prev[1].callback_data == "statsback:global"
+    assert row_prev[2].text == "(мар-26) >"
     assert row_prev[2].callback_data == "statsmth:0"
+
+
+def test_task_week_nav_labels_use_mm_dd() -> None:
+    week_pages = [
+        {"day_key": "2026-04-21", "weekday_cap": "Неделя"},
+        {"day_key": "2026-04-14", "weekday_cap": "Неделя"},
+    ]
+    kb_last_week = _build_day_nav_markup(
+        week_pages,
+        0,
+        lambda idx: f"statst:1:{idx}:root",
+        "statsback:task:root",
+    )
+    assert kb_last_week is not None
+    row_last_week = kb_last_week.inline_keyboard[0]
+    assert row_last_week[0].text == "< (04-14)"
+    assert row_last_week[0].callback_data == "statst:1:1:root"
+    assert row_last_week[1].callback_data == "statsback:task:root"
+    assert row_last_week[2].text == " "
+    assert row_last_week[2].callback_data == "statsnoop"
 
 
 def test_stats_menu_layout_rows() -> None:

@@ -24,6 +24,7 @@ STATS_RE = re.compile(r"^/stats(?:\s+(day|week|month))?$")
 PAGE_SIZE = 10
 STATS_HISTORY_CONTEXT_KEY = "stats_history_context"
 WEEKDAY_SHORT_RU = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
+MONTH_SHORT_RU = ("янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
 
 
 def _family_tzinfo(timezone_name: str) -> ZoneInfo | timezone:
@@ -150,14 +151,24 @@ def _build_day_nav_markup(
 ) -> InlineKeyboardMarkup | None:
     left_button = InlineKeyboardButton(text=" ", callback_data="statsnoop")
     right_button = InlineKeyboardButton(text=" ", callback_data="statsnoop")
+
+    def _day_nav_label(page: dict) -> str:
+        weekday_cap = str(page.get("weekday_cap") or "").strip()
+        if weekday_cap == "Неделя":
+            day_key = str(page.get("day_key") or "").strip()
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", day_key):
+                return day_key[5:]
+            return day_key
+        return weekday_cap
+
     if day_index + 1 < len(day_pages):
-        target = day_pages[day_index + 1]["weekday_cap"]
+        target = _day_nav_label(day_pages[day_index + 1])
         left_button = InlineKeyboardButton(
             text=f"< ({target})",
             callback_data=day_callback_builder(day_index + 1),
         )
     if day_index > 0:
-        target = day_pages[day_index - 1]["weekday_cap"]
+        target = _day_nav_label(day_pages[day_index - 1])
         right_button = InlineKeyboardButton(
             text=f"({target}) >",
             callback_data=day_callback_builder(day_index - 1),
@@ -173,16 +184,19 @@ def _weekly_nav_keyboard(
     prev_week_start: str,
     left_enabled: bool,
 ) -> InlineKeyboardMarkup:
-    left_button = InlineKeyboardButton(text=f"< ({prev_week_start})", callback_data="statsnoop")
+    current_week_label = current_week_start[5:] if re.match(r"^\d{4}-\d{2}-\d{2}$", current_week_start) else current_week_start
+    prev_week_label = prev_week_start[5:] if re.match(r"^\d{4}-\d{2}-\d{2}$", prev_week_start) else prev_week_start
+
+    left_button = InlineKeyboardButton(text=" ", callback_data="statsnoop")
     if left_enabled:
         left_button = InlineKeyboardButton(
-            text=f"< ({prev_week_start})",
+            text=f"< ({prev_week_label})",
             callback_data=f"statsw:{current_week_offset - 1}",
         )
-    right_button = InlineKeyboardButton(text=f"> ({current_week_start})", callback_data="statsnoop")
+    right_button = InlineKeyboardButton(text=" ", callback_data="statsnoop")
     if current_week_offset < 0:
         right_button = InlineKeyboardButton(
-            text=f"> ({current_week_start})",
+            text=f"({current_week_label}) >",
             callback_data=f"statsw:{current_week_offset + 1}",
         )
     middle_button = InlineKeyboardButton(text="Назад", callback_data="statsback:global")
@@ -196,16 +210,26 @@ def _monthly_nav_keyboard(
     prev_month_start: str,
     left_enabled: bool,
 ) -> InlineKeyboardMarkup:
-    left_button = InlineKeyboardButton(text=f"< ({prev_month_start})", callback_data="statsnoop")
+    def _month_label(date_str: str) -> str:
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
+            year = int(date_str[:4])
+            month = int(date_str[5:7])
+            return f"{MONTH_SHORT_RU[month - 1]}-{year % 100:02d}"
+        return date_str
+
+    current_month_label = _month_label(current_month_start)
+    prev_month_label = _month_label(prev_month_start)
+
+    left_button = InlineKeyboardButton(text=" ", callback_data="statsnoop")
     if left_enabled:
         left_button = InlineKeyboardButton(
-            text=f"< ({prev_month_start})",
+            text=f"< ({prev_month_label})",
             callback_data=f"statsmth:{current_month_offset - 1}",
         )
-    right_button = InlineKeyboardButton(text=f"> ({current_month_start})", callback_data="statsnoop")
+    right_button = InlineKeyboardButton(text=" ", callback_data="statsnoop")
     if current_month_offset < 0:
         right_button = InlineKeyboardButton(
-            text=f"> ({current_month_start})",
+            text=f"({current_month_label}) >",
             callback_data=f"statsmth:{current_month_offset + 1}",
         )
     middle_button = InlineKeyboardButton(text="Назад", callback_data="statsback:global")
