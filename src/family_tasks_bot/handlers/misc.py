@@ -13,9 +13,17 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from family_tasks_bot.deps import get_repositories
 from family_tasks_bot.db.repositories import NotificationRepository, PlannedTaskRepository, TaskRuntimeRepository
+from family_tasks_bot.keyboards.stats_inline import (
+    build_day_nav_markup,
+    history_datetime_keyboard,
+    monthly_nav_keyboard,
+    weekly_nav_keyboard,
+)
 from family_tasks_bot.keyboards.reply import groups_menu, main_menu, misc_menu, stats_menu
+from family_tasks_bot.presenters.stats_presenter import build_day_pages, build_week_pages, render_day_page_lines
 from family_tasks_bot.services.bootstrap import ensure_member_context
 from family_tasks_bot.states import GroupStates, NavStates, StatsStates
+from family_tasks_bot.utils.datetime_localization import bump_local_datetime, family_tzinfo, parse_completed_at_utc_sql
 from family_tasks_bot.version import APP_VERSION
 
 router = Router(name="misc")
@@ -28,10 +36,7 @@ MONTH_SHORT_RU = ("янв", "фев", "мар", "апр", "май", "июн", "�
 
 
 def _family_tzinfo(timezone_name: str) -> ZoneInfo | timezone:
-    try:
-        return ZoneInfo(timezone_name)
-    except Exception:
-        return timezone.utc
+    return family_tzinfo(timezone_name)
 
 
 def _parse_raw_timestamp(raw_value: str) -> datetime | None:
@@ -72,41 +77,11 @@ def _build_day_pages(
     *,
     reverse_input: bool = True,
 ) -> list[dict]:
-    ordered_entries = list(reversed(entries)) if reverse_input else list(entries)
-    pages_asc: list[dict] = []
-    current_page: dict | None = None
-    current_day_key: str | None = None
-
-    def _make_page(day_key: str, weekday_short: str, header: str) -> dict:
-        return {
-            "day_key": day_key,
-            "weekday_short": weekday_short,
-            "weekday_cap": weekday_short.capitalize(),
-            "header": header,
-            "items": [],
-        }
-
-    for entry in ordered_entries:
-        raw_completed_at = str(entry["completed_at"])
-        local_dt = _to_family_local_datetime(raw_completed_at, timezone_name)
-        if local_dt is None:
-            day_key = f"raw:{raw_completed_at}"
-            weekday_short = "?"
-            day_header = "дата неизвестна:"
-            time_part = raw_completed_at
-        else:
-            date_part = local_dt.strftime("%Y-%m-%d")
-            weekday_short = WEEKDAY_SHORT_RU[local_dt.weekday()]
-            day_key = date_part
-            day_header = f"{weekday_short} ({date_part}):"
-            time_part = local_dt.strftime("%H:%M")
-        if day_key != current_day_key:
-            current_page = _make_page(day_key, weekday_short, day_header)
-            pages_asc.append(current_page)
-            current_day_key = day_key
-        current_page["items"].append((time_part, entry))
-
-    return list(reversed(pages_asc))
+    return build_day_pages(
+        entries,
+        lambda raw: _to_family_local_datetime(raw, timezone_name),
+        reverse_input=reverse_input,
+    )
 
 
 def _build_week_pages(
@@ -115,32 +90,11 @@ def _build_week_pages(
     *,
     reverse_input: bool = True,
 ) -> list[dict]:
-    ordered_entries = list(reversed(entries)) if reverse_input else list(entries)
-    pages_asc: list[dict] = []
-    current_page: dict | None = None
-    current_week_key: str | None = None
-
-    for entry in ordered_entries:
-        raw_completed_at = str(entry["completed_at"])
-        local_dt = _to_family_local_datetime(raw_completed_at, timezone_name)
-        if local_dt is None:
-            week_start = raw_completed_at
-            day_part = raw_completed_at
-        else:
-            ws = (local_dt - timedelta(days=local_dt.weekday())).date()
-            week_start = ws.strftime("%Y-%m-%d")
-            day_part = local_dt.strftime("%Y-%m-%d")
-        if week_start != current_week_key:
-            current_page = {
-                "day_key": week_start,
-                "weekday_cap": "Неделя",
-                "header": f"Неделя ({week_start}):",
-                "items": [],
-            }
-            pages_asc.append(current_page)
-            current_week_key = week_start
-        current_page["items"].append((day_part, entry))
-    return list(reversed(pages_asc))
+    return build_week_pages(
+        entries,
+        lambda raw: _to_family_local_datetime(raw, timezone_name),
+        reverse_input=reverse_input,
+    )
 
 
 def _build_day_nav_markup(
@@ -149,32 +103,7 @@ def _build_day_nav_markup(
     day_callback_builder,
     back_callback_data: str,
 ) -> InlineKeyboardMarkup | None:
-    left_button = InlineKeyboardButton(text=" ", callback_data="statsnoop")
-    right_button = InlineKeyboardButton(text=" ", callback_data="statsnoop")
-
-    def _day_nav_label(page: dict) -> str:
-        weekday_cap = str(page.get("weekday_cap") or "").strip()
-        if weekday_cap == "Неделя":
-            day_key = str(page.get("day_key") or "").strip()
-            if re.match(r"^\d{4}-\d{2}-\d{2}$", day_key):
-                return day_key[5:]
-            return day_key
-        return weekday_cap
-
-    if day_index + 1 < len(day_pages):
-        target = _day_nav_label(day_pages[day_index + 1])
-        left_button = InlineKeyboardButton(
-            text=f"< ({target})",
-            callback_data=day_callback_builder(day_index + 1),
-        )
-    if day_index > 0:
-        target = _day_nav_label(day_pages[day_index - 1])
-        right_button = InlineKeyboardButton(
-            text=f"({target}) >",
-            callback_data=day_callback_builder(day_index - 1),
-        )
-    middle_button = InlineKeyboardButton(text="Назад", callback_data=back_callback_data)
-    return InlineKeyboardMarkup(inline_keyboard=[[left_button, middle_button, right_button]])
+    return build_day_nav_markup(day_pages, day_index, day_callback_builder, back_callback_data)
 
 
 def _weekly_nav_keyboard(
@@ -185,24 +114,13 @@ def _weekly_nav_keyboard(
     prev_week_start: str,
     left_enabled: bool,
 ) -> InlineKeyboardMarkup:
-    current_week_label = current_week_start[5:] if re.match(r"^\d{4}-\d{2}-\d{2}$", current_week_start) else current_week_start
-    next_week_label = next_week_start[5:] if re.match(r"^\d{4}-\d{2}-\d{2}$", next_week_start) else next_week_start
-    prev_week_label = prev_week_start[5:] if re.match(r"^\d{4}-\d{2}-\d{2}$", prev_week_start) else prev_week_start
-
-    left_button = InlineKeyboardButton(text=" ", callback_data="statsnoop")
-    if left_enabled:
-        left_button = InlineKeyboardButton(
-            text=f"< ({prev_week_label})",
-            callback_data=f"statsw:{current_week_offset - 1}",
-        )
-    right_button = InlineKeyboardButton(text=" ", callback_data="statsnoop")
-    if current_week_offset < 0:
-        right_button = InlineKeyboardButton(
-            text=f"({next_week_label}) >",
-            callback_data=f"statsw:{current_week_offset + 1}",
-        )
-    middle_button = InlineKeyboardButton(text="Назад", callback_data="statsback:global")
-    return InlineKeyboardMarkup(inline_keyboard=[[left_button, middle_button, right_button]])
+    return weekly_nav_keyboard(
+        current_week_offset=current_week_offset,
+        current_week_start=current_week_start,
+        next_week_start=next_week_start,
+        prev_week_start=prev_week_start,
+        left_enabled=left_enabled,
+    )
 
 
 def _monthly_nav_keyboard(
@@ -212,30 +130,12 @@ def _monthly_nav_keyboard(
     prev_month_start: str,
     left_enabled: bool,
 ) -> InlineKeyboardMarkup:
-    def _month_label(date_str: str) -> str:
-        if re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
-            year = int(date_str[:4])
-            month = int(date_str[5:7])
-            return f"{MONTH_SHORT_RU[month - 1]}-{year % 100:02d}"
-        return date_str
-
-    current_month_label = _month_label(current_month_start)
-    prev_month_label = _month_label(prev_month_start)
-
-    left_button = InlineKeyboardButton(text=" ", callback_data="statsnoop")
-    if left_enabled:
-        left_button = InlineKeyboardButton(
-            text=f"< ({prev_month_label})",
-            callback_data=f"statsmth:{current_month_offset - 1}",
-        )
-    right_button = InlineKeyboardButton(text=" ", callback_data="statsnoop")
-    if current_month_offset < 0:
-        right_button = InlineKeyboardButton(
-            text=f"({current_month_label}) >",
-            callback_data=f"statsmth:{current_month_offset + 1}",
-        )
-    middle_button = InlineKeyboardButton(text="Назад", callback_data="statsback:global")
-    return InlineKeyboardMarkup(inline_keyboard=[[left_button, middle_button, right_button]])
+    return monthly_nav_keyboard(
+        current_month_offset=current_month_offset,
+        current_month_start=current_month_start,
+        prev_month_start=prev_month_start,
+        left_enabled=left_enabled,
+    )
 
 
 def _render_day_page_lines(
@@ -245,14 +145,7 @@ def _render_day_page_lines(
     entry_tail_builder,
     empty_text: str,
 ) -> tuple[list[str], int]:
-    if not day_pages:
-        return ([title, empty_text], 0)
-    normalized_day_index = max(0, min(day_index, len(day_pages) - 1))
-    page = day_pages[normalized_day_index]
-    lines = [title, page["header"]]
-    for time_part, entry in page["items"]:
-        lines.append(f"- {time_part} {entry_tail_builder(entry)}")
-    return (lines, normalized_day_index)
+    return render_day_page_lines(title, day_pages, day_index, entry_tail_builder, empty_text)
 
 
 def _history_line(entry: dict, timezone_name: str) -> str:
@@ -1406,17 +1299,7 @@ def _history_norm_completed_at(value: str) -> str:
 
 
 def _parse_completed_at_utc_sql(value: str) -> datetime:
-    raw = (value or "").strip()
-    if not raw:
-        raise ValueError("empty")
-    if "T" not in raw and " " in raw:
-        raw = raw.replace(" ", "T", 1)
-    if raw.endswith("Z"):
-        raw = raw[:-1] + "+00:00"
-    dt = datetime.fromisoformat(raw)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    return parse_completed_at_utc_sql(value)
 
 
 def _history_bump_local_datetime(
@@ -1425,45 +1308,11 @@ def _history_bump_local_datetime(
     field: str,
     delta: int,
 ) -> str:
-    utc = _parse_completed_at_utc_sql(completed_at_utc_sql)
-    local = utc.astimezone(_family_tzinfo(tz_name))
-    y, m, d = local.year, local.month, local.day
-    if field == "m":
-        local2 = local + timedelta(minutes=delta)
-    elif field == "h":
-        local2 = local + timedelta(hours=delta)
-    elif field == "d":
-        local2 = local + timedelta(days=delta)
-    elif field == "M":
-        total = y * 12 + (m - 1) + delta
-        y2, m0 = divmod(total, 12)
-        m2 = m0 + 1
-        d2 = min(d, monthrange(y2, m2)[1])
-        local2 = local.replace(year=y2, month=m2, day=d2)
-    elif field == "y":
-        y2 = y + delta
-        d2 = min(d, monthrange(y2, m)[1])
-        local2 = local.replace(year=y2, day=d2)
-    else:
-        local2 = local
-    return local2.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return bump_local_datetime(completed_at_utc_sql, tz_name, field, delta)
 
 
 def _history_datetime_keyboard(time_preview: str) -> InlineKeyboardMarkup:
-    fields = ["d", "M", "y", "h", "m5", "m"]
-    labels_up = ["День+", "Мес+", "Год+", "Час+", "5мин+", "Мин+"]
-    labels_dn = ["День−", "Мес−", "Год−", "Час−", "5мин−", "Мин−"]
-    row_up = [InlineKeyboardButton(text=labels_up[i], callback_data=f"histdt:+:{fields[i]}") for i in range(6)]
-    row_dn = [InlineKeyboardButton(text=labels_dn[i], callback_data=f"histdt:-:{fields[i]}") for i in range(6)]
-    preview = time_preview if len(time_preview) <= 64 else f"{time_preview[:61]}..."
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=preview, callback_data="statsnoop")],
-            row_up,
-            row_dn,
-            [InlineKeyboardButton(text="Назад", callback_data="histdt:back")],
-        ]
-    )
+    return history_datetime_keyboard(time_preview)
 
 
 async def _history_try_delete_message(bot, chat_id: int, message_id: int | None) -> None:

@@ -12,12 +12,14 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from family_tasks_bot.deps import get_repositories
 from family_tasks_bot.db.repositories import NotificationRepository, PlannedTaskRepository, TaskRuntimeRepository
 from family_tasks_bot.handlers.common import deny_if_no_family
+from family_tasks_bot.keyboards.tasks_inline import manual_completion_datetime_keyboard
 from family_tasks_bot.keyboards.inline import tasks_keyboard
 from family_tasks_bot.keyboards.reply import back_menu, planned_tasks_menu
 from family_tasks_bot.services.auth import AccessContext, can_add_to_execution, can_edit_planned_tasks
 from family_tasks_bot.services.bootstrap import ensure_member_context
 from family_tasks_bot.services.notifications import notify_family
 from family_tasks_bot.states import NavStates, PlannedTaskStates, RuntimeTaskStates
+from family_tasks_bot.utils.datetime_localization import bump_local_datetime, family_tzinfo, parse_completed_at_utc_sql
 from family_tasks_bot.utils.validators import is_valid_hhmm
 
 router = Router(name="tasks")
@@ -96,24 +98,11 @@ def _add_execution_confirm_keyboard() -> InlineKeyboardMarkup:
 
 
 def _manual_fin_tz(tz_name: str) -> ZoneInfo | timezone:
-    try:
-        return ZoneInfo(tz_name or "UTC")
-    except Exception:
-        return timezone.utc
+    return family_tzinfo(tz_name or "UTC")
 
 
 def _parse_completed_at_utc_sql(value: str) -> datetime:
-    raw = (value or "").strip()
-    if not raw:
-        raise ValueError("empty")
-    if "T" not in raw and " " in raw:
-        raw = raw.replace(" ", "T", 1)
-    if raw.endswith("Z"):
-        raw = raw[:-1] + "+00:00"
-    dt = datetime.fromisoformat(raw)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    return parse_completed_at_utc_sql(value)
 
 
 def _bump_manual_completion_local_datetime(
@@ -122,38 +111,7 @@ def _bump_manual_completion_local_datetime(
     field: str,
     delta: int,
 ) -> str:
-    utc = _parse_completed_at_utc_sql(completed_at_utc_sql)
-    tz = _manual_fin_tz(tz_name)
-    local = utc.astimezone(tz)
-    y, M, d, h, mi, sec = (
-        local.year,
-        local.month,
-        local.day,
-        local.hour,
-        local.minute,
-        local.second,
-    )
-    if field == "m":
-        local2 = local + timedelta(minutes=delta)
-    elif field == "h":
-        local2 = local + timedelta(hours=delta)
-    elif field == "d":
-        local2 = local + timedelta(days=delta)
-    elif field == "M":
-        total = y * 12 + (M - 1) + delta
-        y2, m0 = divmod(total, 12)
-        M2 = m0 + 1
-        max_d = monthrange(y2, M2)[1]
-        d2 = min(d, max_d)
-        local2 = local.replace(year=y2, month=M2, day=d2)
-    elif field == "y":
-        y2 = y + delta
-        max_d = monthrange(y2, M)[1]
-        d2 = min(d, max_d)
-        local2 = local.replace(year=y2, day=d2)
-    else:
-        local2 = local
-    return local2.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return bump_local_datetime(completed_at_utc_sql, tz_name, field, delta)
 
 
 def _manual_completion_final_keyboard(
@@ -187,20 +145,7 @@ def _manual_completion_final_keyboard(
 
 
 def _manual_completion_datetime_keyboard(time_preview: str) -> InlineKeyboardMarkup:
-    fields = ["d", "M", "y", "h", "m5", "m"]
-    labels_up = ["День+", "Мес+", "Год+", "Час+", "5мин+", "Мин+"]
-    labels_dn = ["День−", "Мес−", "Год−", "Час−", "5мин−", "Мин−"]
-    row_up = [InlineKeyboardButton(text=labels_up[i], callback_data=f"mcdt:+:{fields[i]}") for i in range(6)]
-    row_dn = [InlineKeyboardButton(text=labels_dn[i], callback_data=f"mcdt:-:{fields[i]}") for i in range(6)]
-    preview = time_preview if len(time_preview) <= 64 else f"{time_preview[:61]}..."
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=preview, callback_data="noop")],
-            row_up,
-            row_dn,
-            [InlineKeyboardButton(text="Назад", callback_data="mcdt:back")],
-        ]
-    )
+    return manual_completion_datetime_keyboard(time_preview)
 
 
 def _stars_text(stars: int) -> str:

@@ -1,9 +1,9 @@
 from aiogram import Router
 
 from family_tasks_bot.handlers.family import router as family_router
-from family_tasks_bot.handlers.misc import router as misc_router
+from family_tasks_bot.handlers.misc_feature import router as misc_router
 from family_tasks_bot.handlers.start import router as start_router
-from family_tasks_bot.handlers.tasks import router as tasks_router
+from family_tasks_bot.handlers.tasks_feature import router as tasks_router
 from family_tasks_bot.utils.bot_data import install_bot_data_mapping
 
 

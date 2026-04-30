@@ -12,7 +12,7 @@ from family_tasks_bot.config import settings
 from family_tasks_bot.db.database import Database
 from family_tasks_bot.db.migrations import run_migrations, seed_default_tasks
 from family_tasks_bot.deps import install_deps, reset_deps
-from family_tasks_bot.db.repositories import (
+from family_tasks_bot.db.repository_modules import (
     FamilyRepository,
     NotificationRepository,
     PlannedTaskRepository,
