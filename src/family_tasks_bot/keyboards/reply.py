@@ -35,7 +35,7 @@ def misc_menu(is_admin: bool) -> ReplyKeyboardMarkup:
         "Группы",
         "Код для Алисы",
     ]
-    labels.extend(["О боте", "Назад"])
+    labels.extend(["Назад", "О боте"])
     rows = _rows_of_two(labels)
     return ReplyKeyboardMarkup(
         keyboard=rows,

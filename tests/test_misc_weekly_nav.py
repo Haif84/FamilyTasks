@@ -1,5 +1,5 @@
 from family_tasks_bot.handlers.misc import _build_day_nav_markup, _monthly_nav_keyboard, _weekly_nav_keyboard
-from family_tasks_bot.keyboards.reply import stats_menu
+from family_tasks_bot.keyboards.reply import misc_menu, stats_menu
 
 
 def test_weekly_nav_keyboard_states() -> None:
@@ -89,3 +89,8 @@ def test_stats_menu_layout_rows() -> None:
     assert [btn.text for btn in user[0]] == ["По члену семьи", "По задаче"]
     assert [btn.text for btn in user[1]] == ["Текущая неделя", "Текущий месяц"]
     assert [btn.text for btn in user[2]] == ["Назад"]
+
+
+def test_misc_menu_places_back_left_and_about_right() -> None:
+    kb = misc_menu(True).keyboard
+    assert [btn.text for btn in kb[-1]] == ["Назад", "О боте"]
