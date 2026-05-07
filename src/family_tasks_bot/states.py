@@ -34,6 +34,8 @@ class StatsStates(StatesGroup):
     waiting_history_datetime = State()
     waiting_history_comment = State()
     waiting_prize_fund_amount = State()
+    waiting_prize_calc_first_stars = State()
+    waiting_prize_calc_second_stars = State()
 
 
 class NavStates(StatesGroup):

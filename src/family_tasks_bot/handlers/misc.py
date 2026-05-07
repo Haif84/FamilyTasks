@@ -45,16 +45,21 @@ def _prize_fund_view_text(amount: int) -> str:
 
 
 def _prize_fund_view_keyboard(*, is_admin: bool) -> InlineKeyboardMarkup | None:
-    if not is_admin:
-        return None
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Правка", callback_data="prizefund:edit")]]
-    )
+    row = [InlineKeyboardButton(text="Рассчитать", callback_data="prizefund:calc:start")]
+    if is_admin:
+        row.append(InlineKeyboardButton(text="Правка", callback_data="prizefund:edit"))
+    return InlineKeyboardMarkup(inline_keyboard=[row])
 
 
 def _prize_fund_input_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="prizefund:back")]]
+    )
+
+
+def _prize_calc_input_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="prizefund:calc:back")]]
     )
 
 
@@ -64,33 +69,26 @@ def _round_up_to_25(value: float) -> int:
     return int(math.ceil(value / 25.0) * 25)
 
 
-def _weekly_prize_lines(prize_fund: int, by_stars: list) -> list[str]:
-    lines = [
-        "Призы:",
-        f"- {_prize_fund_view_text(prize_fund)}",
-    ]
-    if len(by_stars) < 2:
-        lines.append("- Первое место: недостаточно данных (нужно минимум 2 участника со звездами)")
-        lines.append("- Второе место: недостаточно данных")
-        return lines
-    first_stars = float(by_stars[0]["stars"] or 0)
-    second_stars = float(by_stars[1]["stars"] or 0)
+def _calculate_first_second_prizes(prize_fund: int, first_stars: float, second_stars: float) -> tuple[int | None, int | None]:
+    normalized_fund = max(0, int(prize_fund))
     if first_stars <= 0 or second_stars <= 0:
-        lines.append("- Первое место: недостаточно данных (звезды должны быть положительными)")
-        lines.append("- Второе место: недостаточно данных")
-        return lines
+        return (None, None)
     ratio = (first_stars**2) / second_stars
     denom = ratio + second_stars
     if denom <= 0:
-        lines.append("- Первое место: недостаточно данных")
-        lines.append("- Второе место: недостаточно данных")
-        return lines
-    first_raw = (prize_fund / denom) * ratio
-    first_prize = min(prize_fund, _round_up_to_25(first_raw))
-    second_prize = max(0, prize_fund - first_prize)
-    lines.append(f"- Первое место: {first_prize} руб.")
-    lines.append(f"- Второе место: {second_prize} руб.")
-    return lines
+        return (None, None)
+    first_raw = (normalized_fund / denom) * ratio
+    first_prize = min(normalized_fund, _round_up_to_25(first_raw))
+    second_prize = max(0, normalized_fund - first_prize)
+    return (first_prize, second_prize)
+
+
+def _weekly_prize_amounts(prize_fund: int, by_stars: list) -> tuple[int | None, int | None]:
+    if len(by_stars) < 2:
+        return (None, None)
+    first_stars = float(by_stars[0]["stars"] or 0)
+    second_stars = float(by_stars[1]["stars"] or 0)
+    return _calculate_first_second_prizes(prize_fund, first_stars, second_stars)
 
 
 def _parse_raw_timestamp(raw_value: str) -> datetime | None:
@@ -466,6 +464,48 @@ async def prize_fund_edit_back(callback: CallbackQuery, state: FSMContext) -> No
     await callback.answer()
 
 
+@router.callback_query(F.data == "prizefund:calc:start")
+async def prize_fund_calc_start(callback: CallbackQuery, state: FSMContext) -> None:
+    _, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    if callback.message is None:
+        await callback.answer()
+        return
+    await state.set_state(StatsStates.waiting_prize_calc_first_stars)
+    prompt = await callback.message.answer(
+        "Введите кол-во баллов на первом месте",
+        reply_markup=_prize_calc_input_keyboard(),
+    )
+    await state.update_data(prize_calc_prompt_message_id=int(prompt.message_id))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "prizefund:calc:back")
+async def prize_fund_calc_back(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    prompt_message_id = data.get("prize_calc_prompt_message_id")
+    if callback.message is not None and prompt_message_id is not None:
+        await _history_try_delete_message(
+            callback.bot,
+            int(callback.message.chat.id),
+            int(prompt_message_id),
+        )
+    await state.set_state(None)
+    await state.update_data(
+        prize_calc_prompt_message_id=None,
+        prize_calc_first_stars=None,
+    )
+    if callback.message is not None:
+        try:
+            await callback.message.edit_text("Расчёт призов отменен.", reply_markup=None)
+        except TelegramBadRequest:
+            await callback.message.answer("Расчёт призов отменен.")
+    await callback.answer()
+
+
 @router.message(StatsStates.waiting_prize_fund_amount)
 async def prize_fund_edit_save(message: Message, state: FSMContext) -> None:
     raw = (message.text or "").strip()
@@ -511,6 +551,67 @@ async def prize_fund_edit_save(message: Message, state: FSMContext) -> None:
         prize_fund_target_chat_id=None,
         prize_fund_target_message_id=None,
         prize_fund_prompt_message_id=None,
+    )
+
+
+@router.message(StatsStates.waiting_prize_calc_first_stars)
+async def prize_fund_calc_first_stars(message: Message, state: FSMContext) -> None:
+    raw = (message.text or "").strip()
+    if not raw.isdigit() or int(raw) <= 0:
+        await message.answer("Введите положительное число баллов для первого места.")
+        return
+    data = await state.get_data()
+    prompt_message_id = data.get("prize_calc_prompt_message_id")
+    if prompt_message_id is not None:
+        await _history_try_delete_message(
+            message.bot,
+            int(message.chat.id),
+            int(prompt_message_id),
+        )
+    await state.update_data(prize_calc_first_stars=int(raw))
+    await state.set_state(StatsStates.waiting_prize_calc_second_stars)
+    prompt = await message.answer(
+        "Введите кол-во баллов на втором месте",
+        reply_markup=_prize_calc_input_keyboard(),
+    )
+    await state.update_data(prize_calc_prompt_message_id=int(prompt.message_id))
+
+
+@router.message(StatsStates.waiting_prize_calc_second_stars)
+async def prize_fund_calc_second_stars(message: Message, state: FSMContext) -> None:
+    raw = (message.text or "").strip()
+    if not raw.isdigit() or int(raw) <= 0:
+        await message.answer("Введите положительное число баллов для второго места.")
+        return
+    _, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+    if ctx.family_id is None:
+        await state.set_state(None)
+        await message.answer("Вы пока не добавлены в семью.")
+        return
+    data = await state.get_data()
+    prompt_message_id = data.get("prize_calc_prompt_message_id")
+    if prompt_message_id is not None:
+        await _history_try_delete_message(
+            message.bot,
+            int(message.chat.id),
+            int(prompt_message_id),
+        )
+    first_stars = float(data.get("prize_calc_first_stars") or 0)
+    second_stars = float(int(raw))
+    prize_fund = await family_repo.get_weekly_prize_fund(ctx.family_id)
+    first_prize, second_prize = _calculate_first_second_prizes(prize_fund, first_stars, second_stars)
+    if first_prize is None or second_prize is None:
+        await message.answer("Не удалось рассчитать призы: проверьте введенные баллы.")
+    else:
+        await message.answer(
+            f"Первое место: {first_prize} руб.\n"
+            f"Второе место: {second_prize} руб."
+        )
+    await state.set_state(None)
+    await state.update_data(
+        prize_calc_prompt_message_id=None,
+        prize_calc_first_stars=None,
     )
 
 
@@ -626,9 +727,14 @@ async def stats_current_week(message: Message) -> None:
         lines.append("Пока нет выполнений.")
     if by_stars:
         lines.append("Заработано звёзд по участникам:")
-        for row in by_stars:
-            lines.append(f"- {row['display_name']}: {row['stars']}")
-    lines.extend(_weekly_prize_lines(prize_fund, by_stars))
+        first_prize, second_prize = _weekly_prize_amounts(prize_fund, by_stars)
+        for idx, row in enumerate(by_stars):
+            line = f"- {row['display_name']}: {row['stars']}"
+            if idx == 0 and first_prize is not None:
+                line += f" (приз: {first_prize} руб.)"
+            elif idx == 1 and second_prize is not None:
+                line += f" (приз: {second_prize} руб.)"
+            lines.append(line)
     if by_task:
         lines.append("По типам задач:")
         for row in by_task[:10]:
@@ -733,9 +839,14 @@ async def stats_week_callback(callback: CallbackQuery) -> None:
         lines.append("Пока нет выполнений.")
     if by_stars:
         lines.append("Заработано звёзд по участникам:")
-        for row in by_stars:
-            lines.append(f"- {row['display_name']}: {row['stars']}")
-    lines.extend(_weekly_prize_lines(prize_fund, by_stars))
+        first_prize, second_prize = _weekly_prize_amounts(prize_fund, by_stars)
+        for idx, row in enumerate(by_stars):
+            line = f"- {row['display_name']}: {row['stars']}"
+            if idx == 0 and first_prize is not None:
+                line += f" (приз: {first_prize} руб.)"
+            elif idx == 1 and second_prize is not None:
+                line += f" (приз: {second_prize} руб.)"
+            lines.append(line)
     if by_task:
         lines.append("По типам задач:")
         for row in by_task[:10]:

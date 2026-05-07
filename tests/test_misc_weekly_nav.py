@@ -1,8 +1,10 @@
 from family_tasks_bot.handlers.misc import (
+    _calculate_first_second_prizes,
     _build_day_nav_markup,
     _monthly_nav_keyboard,
+    _prize_fund_view_keyboard,
     _weekly_nav_keyboard,
-    _weekly_prize_lines,
+    _weekly_prize_amounts,
 )
 from family_tasks_bot.keyboards.reply import misc_menu, stats_menu
 
@@ -104,15 +106,29 @@ def test_misc_menu_contains_prize_fund_button() -> None:
     assert "О боте" in texts
 
 
-def test_weekly_prizes_lines_when_enough_data() -> None:
-    lines = _weekly_prize_lines(
+def test_weekly_prize_amounts_when_enough_data() -> None:
+    first, second = _weekly_prize_amounts(
         1000,
         [
             {"display_name": "A", "stars": 40},
             {"display_name": "B", "stars": 20},
         ],
     )
-    assert lines[0] == "Призы:"
-    assert lines[1] == "- Призовой фонд текущей недели: 1000 руб."
-    assert lines[2].startswith("- Первое место: ")
-    assert lines[3].startswith("- Второе место: ")
+    assert first is not None
+    assert second is not None
+    assert first + second == 1000
+
+
+def test_calculate_first_second_prizes_invalid_stars() -> None:
+    first, second = _calculate_first_second_prizes(1000, 10, 0)
+    assert first is None
+    assert second is None
+
+
+def test_prize_fund_keyboard_shows_calculate_for_all_and_edit_for_admin() -> None:
+    user_kb = _prize_fund_view_keyboard(is_admin=False)
+    admin_kb = _prize_fund_view_keyboard(is_admin=True)
+    assert user_kb is not None
+    assert admin_kb is not None
+    assert [btn.text for btn in user_kb.inline_keyboard[0]] == ["Рассчитать"]
+    assert [btn.text for btn in admin_kb.inline_keyboard[0]] == ["Рассчитать", "Правка"]
