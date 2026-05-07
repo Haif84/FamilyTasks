@@ -434,17 +434,30 @@ async def prize_fund_edit_start(callback: CallbackQuery, state: FSMContext) -> N
         prize_fund_target_chat_id=int(callback.message.chat.id),
         prize_fund_target_message_id=int(callback.message.message_id),
     )
-    await callback.message.answer(
+    prompt = await callback.message.answer(
         "Введите сумму призового фонда текущей недели",
         reply_markup=_prize_fund_input_keyboard(),
     )
+    await state.update_data(prize_fund_prompt_message_id=int(prompt.message_id))
     await callback.answer()
 
 
 @router.callback_query(F.data == "prizefund:back")
 async def prize_fund_edit_back(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    prompt_message_id = data.get("prize_fund_prompt_message_id")
+    if callback.message is not None and prompt_message_id is not None:
+        await _history_try_delete_message(
+            callback.bot,
+            int(callback.message.chat.id),
+            int(prompt_message_id),
+        )
     await state.set_state(None)
-    await state.update_data(prize_fund_target_chat_id=None, prize_fund_target_message_id=None)
+    await state.update_data(
+        prize_fund_target_chat_id=None,
+        prize_fund_target_message_id=None,
+        prize_fund_prompt_message_id=None,
+    )
     if callback.message is not None:
         try:
             await callback.message.edit_text("Изменение призового фонда отменено.", reply_markup=None)
@@ -474,6 +487,13 @@ async def prize_fund_edit_save(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     target_chat_id = data.get("prize_fund_target_chat_id")
     target_message_id = data.get("prize_fund_target_message_id")
+    prompt_message_id = data.get("prize_fund_prompt_message_id")
+    if prompt_message_id is not None:
+        await _history_try_delete_message(
+            message.bot,
+            int(message.chat.id),
+            int(prompt_message_id),
+        )
     if target_chat_id is not None and target_message_id is not None:
         try:
             await message.bot.edit_message_text(
@@ -487,7 +507,11 @@ async def prize_fund_edit_save(message: Message, state: FSMContext) -> None:
     else:
         await message.answer(_prize_fund_view_text(amount), reply_markup=_prize_fund_view_keyboard(is_admin=True))
     await state.set_state(None)
-    await state.update_data(prize_fund_target_chat_id=None, prize_fund_target_message_id=None)
+    await state.update_data(
+        prize_fund_target_chat_id=None,
+        prize_fund_target_message_id=None,
+        prize_fund_prompt_message_id=None,
+    )
 
 
 async def _send_alice_link_code(message: Message) -> None:
