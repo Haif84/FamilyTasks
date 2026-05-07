@@ -34,6 +34,7 @@ def misc_menu(is_admin: bool) -> ReplyKeyboardMarkup:
         "Плановые задачи",
         "Группы",
         "Код для Алисы",
+        "Призовой фонд",
     ]
     labels.extend(["Назад", "О боте"])
     rows = _rows_of_two(labels)

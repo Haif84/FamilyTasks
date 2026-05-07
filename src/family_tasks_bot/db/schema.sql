@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS families (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     timezone TEXT NOT NULL DEFAULT 'UTC',
+    prize_fund_weekly INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_by_user_id INTEGER NOT NULL,
     FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT

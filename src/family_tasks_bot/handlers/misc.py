@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 from calendar import monthrange
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -37,6 +38,59 @@ MONTH_SHORT_RU = ("янв", "фев", "мар", "апр", "май", "июн", "�
 
 def _family_tzinfo(timezone_name: str) -> ZoneInfo | timezone:
     return family_tzinfo(timezone_name)
+
+
+def _prize_fund_view_text(amount: int) -> str:
+    return f"Призовой фонд текущей недели: {max(0, int(amount))} руб."
+
+
+def _prize_fund_view_keyboard(*, is_admin: bool) -> InlineKeyboardMarkup | None:
+    if not is_admin:
+        return None
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Правка", callback_data="prizefund:edit")]]
+    )
+
+
+def _prize_fund_input_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="prizefund:back")]]
+    )
+
+
+def _round_up_to_25(value: float) -> int:
+    if value <= 0:
+        return 0
+    return int(math.ceil(value / 25.0) * 25)
+
+
+def _weekly_prize_lines(prize_fund: int, by_stars: list) -> list[str]:
+    lines = [
+        "Призы:",
+        f"- {_prize_fund_view_text(prize_fund)}",
+    ]
+    if len(by_stars) < 2:
+        lines.append("- Первое место: недостаточно данных (нужно минимум 2 участника со звездами)")
+        lines.append("- Второе место: недостаточно данных")
+        return lines
+    first_stars = float(by_stars[0]["stars"] or 0)
+    second_stars = float(by_stars[1]["stars"] or 0)
+    if first_stars <= 0 or second_stars <= 0:
+        lines.append("- Первое место: недостаточно данных (звезды должны быть положительными)")
+        lines.append("- Второе место: недостаточно данных")
+        return lines
+    ratio = (first_stars**2) / second_stars
+    denom = ratio + second_stars
+    if denom <= 0:
+        lines.append("- Первое место: недостаточно данных")
+        lines.append("- Второе место: недостаточно данных")
+        return lines
+    first_raw = (prize_fund / denom) * ratio
+    first_prize = min(prize_fund, _round_up_to_25(first_raw))
+    second_prize = max(0, prize_fund - first_prize)
+    lines.append(f"- Первое место: {first_prize} руб.")
+    lines.append(f"- Второе место: {second_prize} руб.")
+    return lines
 
 
 def _parse_raw_timestamp(raw_value: str) -> datetime | None:
@@ -348,6 +402,94 @@ async def open_misc(message: Message) -> None:
     await message.answer("Раздел Прочее", reply_markup=misc_menu(is_admin=ctx.is_admin))
 
 
+@router.message(F.text == "Призовой фонд")
+async def show_prize_fund(message: Message) -> None:
+    _, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+    if ctx.family_id is None:
+        await message.answer("Вы пока не добавлены в семью.")
+        return
+    prize_fund = await family_repo.get_weekly_prize_fund(ctx.family_id)
+    await message.answer(
+        _prize_fund_view_text(prize_fund),
+        reply_markup=_prize_fund_view_keyboard(is_admin=ctx.is_admin),
+    )
+
+
+@router.callback_query(F.data == "prizefund:edit")
+async def prize_fund_edit_start(callback: CallbackQuery, state: FSMContext) -> None:
+    _, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, callback.from_user)
+    if ctx.family_id is None:
+        await callback.answer("Вы не состоите в семье.", show_alert=True)
+        return
+    if not ctx.is_admin:
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+    if callback.message is None:
+        await callback.answer()
+        return
+    await state.set_state(StatsStates.waiting_prize_fund_amount)
+    await state.update_data(
+        prize_fund_target_chat_id=int(callback.message.chat.id),
+        prize_fund_target_message_id=int(callback.message.message_id),
+    )
+    await callback.message.answer(
+        "Введите сумму призового фонда текущей недели",
+        reply_markup=_prize_fund_input_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "prizefund:back")
+async def prize_fund_edit_back(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(None)
+    await state.update_data(prize_fund_target_chat_id=None, prize_fund_target_message_id=None)
+    if callback.message is not None:
+        try:
+            await callback.message.edit_text("Изменение призового фонда отменено.", reply_markup=None)
+        except TelegramBadRequest:
+            await callback.message.answer("Изменение призового фонда отменено.")
+    await callback.answer()
+
+
+@router.message(StatsStates.waiting_prize_fund_amount)
+async def prize_fund_edit_save(message: Message, state: FSMContext) -> None:
+    raw = (message.text or "").strip()
+    if not raw.isdigit() or int(raw) <= 0:
+        await message.answer("Введите положительное число (например, 1500).")
+        return
+    amount = int(raw)
+    _, user_repo, family_repo = get_repositories()
+    ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
+    if ctx.family_id is None:
+        await state.set_state(None)
+        await message.answer("Вы пока не добавлены в семью.")
+        return
+    if not ctx.is_admin:
+        await state.set_state(None)
+        await message.answer("Эта команда доступна только администраторам.")
+        return
+    await family_repo.set_weekly_prize_fund(ctx.family_id, amount)
+    data = await state.get_data()
+    target_chat_id = data.get("prize_fund_target_chat_id")
+    target_message_id = data.get("prize_fund_target_message_id")
+    if target_chat_id is not None and target_message_id is not None:
+        try:
+            await message.bot.edit_message_text(
+                text=_prize_fund_view_text(amount),
+                chat_id=int(target_chat_id),
+                message_id=int(target_message_id),
+                reply_markup=_prize_fund_view_keyboard(is_admin=True),
+            )
+        except TelegramBadRequest:
+            await message.answer(_prize_fund_view_text(amount), reply_markup=_prize_fund_view_keyboard(is_admin=True))
+    else:
+        await message.answer(_prize_fund_view_text(amount), reply_markup=_prize_fund_view_keyboard(is_admin=True))
+    await state.set_state(None)
+    await state.update_data(prize_fund_target_chat_id=None, prize_fund_target_message_id=None)
+
+
 async def _send_alice_link_code(message: Message) -> None:
     _, user_repo, family_repo = get_repositories()
     ctx = await ensure_member_context(user_repo, family_repo, message.from_user)
@@ -447,6 +589,7 @@ async def stats_current_week(message: Message) -> None:
     )
     by_stars = await runtime.stats_stars_by_user_for_week(ctx.family_id, timezone_name, week_offset=week_offset)
     by_task, _, _ = await runtime.stats_by_task_type_for_week(ctx.family_id, timezone_name, week_offset=week_offset)
+    prize_fund = await family_repo.get_weekly_prize_fund(ctx.family_id)
     lines = [
         f"Статистика за неделю ({start_date} - {end_date}):",
         f"Часовой пояс семьи: {timezone_name}",
@@ -461,6 +604,7 @@ async def stats_current_week(message: Message) -> None:
         lines.append("Заработано звёзд по участникам:")
         for row in by_stars:
             lines.append(f"- {row['display_name']}: {row['stars']}")
+    lines.extend(_weekly_prize_lines(prize_fund, by_stars))
     if by_task:
         lines.append("По типам задач:")
         for row in by_task[:10]:
@@ -552,6 +696,7 @@ async def stats_week_callback(callback: CallbackQuery) -> None:
     )
     by_stars = await runtime.stats_stars_by_user_for_week(ctx.family_id, timezone_name, week_offset=week_offset)
     by_task, _, _ = await runtime.stats_by_task_type_for_week(ctx.family_id, timezone_name, week_offset=week_offset)
+    prize_fund = await family_repo.get_weekly_prize_fund(ctx.family_id)
     lines = [
         f"Статистика за неделю ({start_date} - {end_date}):",
         f"Часовой пояс семьи: {timezone_name}",
@@ -566,6 +711,7 @@ async def stats_week_callback(callback: CallbackQuery) -> None:
         lines.append("Заработано звёзд по участникам:")
         for row in by_stars:
             lines.append(f"- {row['display_name']}: {row['stars']}")
+    lines.extend(_weekly_prize_lines(prize_fund, by_stars))
     if by_task:
         lines.append("По типам задач:")
         for row in by_task[:10]:

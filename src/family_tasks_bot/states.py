@@ -33,6 +33,7 @@ class StatsStates(StatesGroup):
     waiting_history_executor = State()
     waiting_history_datetime = State()
     waiting_history_comment = State()
+    waiting_prize_fund_amount = State()
 
 
 class NavStates(StatesGroup):

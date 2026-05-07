@@ -241,6 +241,29 @@ class FamilyRepository:
         await self.conn.commit()
         return (cur.rowcount or 0) > 0
 
+    async def get_weekly_prize_fund(self, family_id: int) -> int:
+        async with self.conn.execute(
+            "SELECT prize_fund_weekly FROM families WHERE id = ?",
+            (family_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return 0
+        return max(0, int(row["prize_fund_weekly"] or 0))
+
+    async def set_weekly_prize_fund(self, family_id: int, amount: int) -> bool:
+        normalized = max(0, int(amount))
+        cur = await self.conn.execute(
+            """
+            UPDATE families
+            SET prize_fund_weekly = ?
+            WHERE id = ?
+            """,
+            (normalized, family_id),
+        )
+        await self.conn.commit()
+        return (cur.rowcount or 0) > 0
+
     async def add_invite(
         self,
         family_id: int,

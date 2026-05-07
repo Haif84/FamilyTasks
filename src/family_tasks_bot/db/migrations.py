@@ -40,6 +40,7 @@ async def run_migrations(conn: aiosqlite.Connection) -> None:
     await _migrate_task_comment_fields(conn)
     await _migrate_task_effort_stars(conn)
     await _migrate_alice_linking(conn)
+    await _migrate_weekly_prize_fund(conn)
     await conn.commit()
 
 
@@ -364,6 +365,32 @@ async def _migrate_alice_linking(conn: aiosqlite.Connection) -> None:
     )
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_alice_link_codes_user_expires ON alice_link_codes(user_id, expires_at)"
+    )
+    await conn.execute("INSERT INTO schema_migrations (id) VALUES (?)", (migration_id,))
+
+
+async def _migrate_weekly_prize_fund(conn: aiosqlite.Connection) -> None:
+    migration_id = "011_weekly_prize_fund"
+    async with conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ? LIMIT 1",
+        (migration_id,),
+    ) as cursor:
+        exists = await cursor.fetchone()
+    if exists is not None:
+        return
+
+    async with conn.execute("PRAGMA table_info(families)") as cursor:
+        family_columns = await cursor.fetchall()
+    family_col_names = {str(col["name"]) for col in family_columns}
+    if "prize_fund_weekly" not in family_col_names:
+        await conn.execute("ALTER TABLE families ADD COLUMN prize_fund_weekly INTEGER NOT NULL DEFAULT 0")
+
+    await conn.execute(
+        """
+        UPDATE families
+        SET prize_fund_weekly = 0
+        WHERE prize_fund_weekly IS NULL OR prize_fund_weekly < 0
+        """
     )
     await conn.execute("INSERT INTO schema_migrations (id) VALUES (?)", (migration_id,))
 

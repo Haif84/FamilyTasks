@@ -1,4 +1,9 @@
-from family_tasks_bot.handlers.misc import _build_day_nav_markup, _monthly_nav_keyboard, _weekly_nav_keyboard
+from family_tasks_bot.handlers.misc import (
+    _build_day_nav_markup,
+    _monthly_nav_keyboard,
+    _weekly_nav_keyboard,
+    _weekly_prize_lines,
+)
 from family_tasks_bot.keyboards.reply import misc_menu, stats_menu
 
 
@@ -91,6 +96,23 @@ def test_stats_menu_layout_rows() -> None:
     assert [btn.text for btn in user[2]] == ["Назад"]
 
 
-def test_misc_menu_places_back_left_and_about_right() -> None:
+def test_misc_menu_contains_prize_fund_button() -> None:
     kb = misc_menu(True).keyboard
-    assert [btn.text for btn in kb[-1]] == ["Назад", "О боте"]
+    texts = [btn.text for row in kb for btn in row]
+    assert "Призовой фонд" in texts
+    assert "Назад" in texts
+    assert "О боте" in texts
+
+
+def test_weekly_prizes_lines_when_enough_data() -> None:
+    lines = _weekly_prize_lines(
+        1000,
+        [
+            {"display_name": "A", "stars": 40},
+            {"display_name": "B", "stars": 20},
+        ],
+    )
+    assert lines[0] == "Призы:"
+    assert lines[1] == "- Призовой фонд текущей недели: 1000 руб."
+    assert lines[2].startswith("- Первое место: ")
+    assert lines[3].startswith("- Второе место: ")
