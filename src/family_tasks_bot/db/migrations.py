@@ -41,6 +41,7 @@ async def run_migrations(conn: aiosqlite.Connection) -> None:
     await _migrate_task_effort_stars(conn)
     await _migrate_alice_linking(conn)
     await _migrate_weekly_prize_fund(conn)
+    await _migrate_prize_calc_algorithm(conn)
     await conn.commit()
 
 
@@ -390,6 +391,36 @@ async def _migrate_weekly_prize_fund(conn: aiosqlite.Connection) -> None:
         UPDATE families
         SET prize_fund_weekly = 0
         WHERE prize_fund_weekly IS NULL OR prize_fund_weekly < 0
+        """
+    )
+    await conn.execute("INSERT INTO schema_migrations (id) VALUES (?)", (migration_id,))
+
+
+async def _migrate_prize_calc_algorithm(conn: aiosqlite.Connection) -> None:
+    migration_id = "012_prize_calc_algorithm"
+    async with conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ? LIMIT 1",
+        (migration_id,),
+    ) as cursor:
+        exists = await cursor.fetchone()
+    if exists is not None:
+        return
+
+    async with conn.execute("PRAGMA table_info(families)") as cursor:
+        family_columns = await cursor.fetchall()
+    family_col_names = {str(col["name"]) for col in family_columns}
+    if "prize_calc_algorithm" not in family_col_names:
+        await conn.execute(
+            "ALTER TABLE families ADD COLUMN prize_calc_algorithm TEXT NOT NULL DEFAULT 'quadratic'"
+        )
+
+    await conn.execute(
+        """
+        UPDATE families
+        SET prize_calc_algorithm = 'quadratic'
+        WHERE prize_calc_algorithm IS NULL
+           OR trim(prize_calc_algorithm) = ''
+           OR prize_calc_algorithm NOT IN ('quadratic', 'linear')
         """
     )
     await conn.execute("INSERT INTO schema_migrations (id) VALUES (?)", (migration_id,))

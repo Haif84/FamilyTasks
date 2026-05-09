@@ -264,6 +264,34 @@ class FamilyRepository:
         await self.conn.commit()
         return (cur.rowcount or 0) > 0
 
+    async def get_prize_calc_algorithm(self, family_id: int) -> str:
+        async with self.conn.execute(
+            "SELECT prize_calc_algorithm FROM families WHERE id = ?",
+            (family_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return "quadratic"
+        value = str(row["prize_calc_algorithm"] or "quadratic").strip().lower()
+        if value not in {"quadratic", "linear"}:
+            return "quadratic"
+        return value
+
+    async def set_prize_calc_algorithm(self, family_id: int, algorithm: str) -> bool:
+        normalized = str(algorithm or "").strip().lower()
+        if normalized not in {"quadratic", "linear"}:
+            return False
+        cur = await self.conn.execute(
+            """
+            UPDATE families
+            SET prize_calc_algorithm = ?
+            WHERE id = ?
+            """,
+            (normalized, family_id),
+        )
+        await self.conn.commit()
+        return (cur.rowcount or 0) > 0
+
     async def add_invite(
         self,
         family_id: int,

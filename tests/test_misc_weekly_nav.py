@@ -125,10 +125,21 @@ def test_calculate_first_second_prizes_invalid_stars() -> None:
     assert second is None
 
 
-def test_prize_fund_keyboard_shows_calculate_for_all_and_edit_for_admin() -> None:
+def test_calculate_first_second_prizes_linear_algorithm() -> None:
+    first, second = _calculate_first_second_prizes(1000, 40, 20, algorithm="linear")
+    assert first is not None
+    assert second is not None
+    assert first + second == 1000
+    assert first >= second
+
+
+def test_prize_fund_keyboard_shows_algo_button_and_edit_for_admin() -> None:
     user_kb = _prize_fund_view_keyboard(is_admin=False)
     admin_kb = _prize_fund_view_keyboard(is_admin=True)
     assert user_kb is not None
     assert admin_kb is not None
     assert [btn.text for btn in user_kb.inline_keyboard[0]] == ["Рассчитать"]
-    assert [btn.text for btn in admin_kb.inline_keyboard[0]] == ["Рассчитать", "Правка"]
+    assert [btn.text for btn in user_kb.inline_keyboard[1]] == ["Алгоритм расчета приза"]
+    assert [btn.text for btn in admin_kb.inline_keyboard[0]] == ["Рассчитать"]
+    assert [btn.text for btn in admin_kb.inline_keyboard[1]] == ["Алгоритм расчета приза"]
+    assert [btn.text for btn in admin_kb.inline_keyboard[2]] == ["Правка"]
