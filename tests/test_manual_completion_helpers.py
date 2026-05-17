@@ -3,6 +3,7 @@ from __future__ import annotations
 from family_tasks_bot.handlers.tasks import (
     _bump_manual_completion_local_datetime,
     _manual_completion_datetime_keyboard,
+    _manual_completion_final_keyboard,
     _manual_fin_carried_settings,
     _manual_fin_offset_display,
 )
@@ -25,6 +26,15 @@ def test_manual_completion_carried_settings_are_family_scoped() -> None:
 
     assert _manual_fin_carried_settings(data, 7, 11) == (42, -180, True)
     assert _manual_fin_carried_settings(data, 8, 11) == (11, 0, False)
+
+
+def test_manual_completion_final_keyboard_datetime_for_all_members() -> None:
+    admin_kb = _manual_completion_final_keyboard(is_admin=True, requires_comment=False)
+    member_kb = _manual_completion_final_keyboard(is_admin=False, requires_comment=False)
+    admin_row = [btn.text for btn in admin_kb.inline_keyboard[0]]
+    member_row = [btn.text for btn in member_kb.inline_keyboard[0]]
+    assert admin_row == ["Исполнитель", "Дата/Время"]
+    assert member_row == ["Дата/Время"]
 
 
 def test_manual_completion_datetime_keyboard_has_plusminus_five_min() -> None:

@@ -120,13 +120,11 @@ def _manual_completion_final_keyboard(
     requires_comment: bool,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
+    top_row: list[InlineKeyboardButton] = []
     if is_admin:
-        rows.append(
-            [
-                InlineKeyboardButton(text="Исполнитель", callback_data="mcfin:exec"),
-                InlineKeyboardButton(text="Дата/Время", callback_data="mcfin:dt"),
-            ]
-        )
+        top_row.append(InlineKeyboardButton(text="Исполнитель", callback_data="mcfin:exec"))
+    top_row.append(InlineKeyboardButton(text="Дата/Время", callback_data="mcfin:dt"))
+    rows.append(top_row)
     if requires_comment:
         rows.append([InlineKeyboardButton(text="Комментарий", callback_data="mcfin:comment")])
     rows.append(
@@ -2296,9 +2294,6 @@ async def manual_completion_final_menu(callback: CallbackQuery, state: FSMContex
         return
 
     if action == "dt":
-        if not ctx.is_admin:
-            await callback.answer("Нет прав.", show_alert=True)
-            return
         tz = ctx.family_timezone or "UTC"
         baseline = str(data.get("m_fin_completed_at_utc") or "")
         offset_is_set = int(data.get("m_fin_dt_offset_is_set") or 0) == 1
